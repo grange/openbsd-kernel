@@ -623,6 +623,9 @@ owsbm*	at onewire?		# Smart Battery Monitor
 owtemp* at onewire?		# Temperature
 owctr*	at onewire?		# Counter device
 
+# Xen paravirtual drivers
+xen*	at pci?			# Platform device
+
 pseudo-device	pctr		1
 pseudo-device	nvram		1
 pseudo-device	sequencer	1

@@ -1,0 +1,3 @@
+# $OpenBSD$
+
+file	dev/xen/xen.c			xen

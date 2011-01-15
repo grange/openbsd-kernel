@@ -811,3 +811,8 @@ file	dev/pci/itherm.c		itherm
 device	glxpcib: isabus, gpiobus
 attach	glxpcib at pci
 file	dev/pci/glxpcib.c		glxpcib
+
+# Xen platform device
+device	xen: xenbus
+attach	xen at pci
+file	dev/pci/xen_pci.c		xen

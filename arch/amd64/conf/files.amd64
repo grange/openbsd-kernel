@@ -240,6 +240,11 @@ include "dev/sdmmc/files.sdmmc"
 include "dev/onewire/files.onewire"
 
 #
+# Machine-independent Xen paravirtual drivers
+#
+include "dev/xen/files.xen"
+
+#
 # IPMI
 #
 attach	ipmi at mainbus
