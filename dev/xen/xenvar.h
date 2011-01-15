@@ -39,7 +39,11 @@ extern int xen_debug;
 #endif
 
 struct xen_softc {
-	struct device		sc_dev;
+	struct device	sc_dev;
+
+	int		sc_store_ec;
+	paddr_t		sc_store_pa;
+	vaddr_t		sc_store_va;
 };
 
 int xen_attach(struct xen_softc *);

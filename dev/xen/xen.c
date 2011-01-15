@@ -45,7 +45,7 @@ __asm(".pushsection .text\n\t"
       ".popsection");
 
 static inline int
-xen_hvm_getparam(int index, uint64_t *valp)
+xen_hvm_param(int index, u_int64_t *valp)
 {
 	struct xen_hvm_param xhp;
 
@@ -63,6 +63,7 @@ xen_attach(struct xen_softc *sc)
 {
 	u_int32_t regs[4], msr;
 	paddr_t pa;
+	u_int64_t val;
 
 	_cpuid(XEN_CPUID_LEAF(0), regs);
 	DPRINTF(XEN_D_INFO, (": leaf 1 0x%08x 0x%08x 0x%08x 0x%08x",
@@ -92,6 +93,29 @@ xen_attach(struct xen_softc *sc)
 		return (1);
 	}
 	wrmsr(msr, pa);
+
+	/* Get store params */
+	if (xen_hvm_param(HVM_PARAM_STORE_EVTCHN, &val)) {
+		printf(": can't get store event chan\n");
+		return (1);
+	}
+	sc->sc_store_ec = val;
+
+	if (xen_hvm_param(HVM_PARAM_STORE_PFN, &val)) {
+		printf(": can't get store phys addr\n");
+		return (1);
+	}
+	sc->sc_store_pa = val << PAGE_SHIFT;
+
+	/* Map store ring */
+	if ((sc->sc_store_va = uvm_km_alloc(kernel_map, PAGE_SIZE)) == 0) {
+		printf(": no mem for store\n");
+		return (1);
+	}
+	pmap_kenter_pa(sc->sc_store_va, sc->sc_store_pa, VM_PROT_READ |
+	    VM_PROT_WRITE);
+	DPRINTF(XEN_D_INFO, (", store ec %d pa 0x%p va 0x%p", sc->sc_store_ec,
+	    sc->sc_store_pa, sc->sc_store_va));
 
 	printf("\n");
 	return (0);
