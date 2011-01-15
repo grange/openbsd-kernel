@@ -312,4 +312,11 @@ HYPERVISOR_domctl(
 }
 #endif
 
+static inline unsigned long
+HYPERVISOR_hvm_op(
+	int op, void *arg)
+{
+	return _hypercall2(unsigned long, hvm_op, op, arg);
+}
+
 #endif	/* !_DEV_XEN_HYPERCALL_I386_H_ */

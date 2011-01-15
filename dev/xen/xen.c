@@ -44,6 +44,20 @@ __asm(".pushsection .text\n\t"
       ".skip 4096\n\t"
       ".popsection");
 
+static inline int
+xen_hvm_getparam(int index, uint64_t *valp)
+{
+	struct xen_hvm_param xhp;
+
+	xhp.domid = DOMID_SELF;
+	xhp.index = index;
+	if (HYPERVISOR_hvm_op(HVMOP_get_param, &xhp))
+		return (1);
+	*valp = xhp.value;
+
+	return (0);
+}
+
 int
 xen_attach(struct xen_softc *sc)
 {
