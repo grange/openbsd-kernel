@@ -9,6 +9,8 @@
 #ifndef _DEV_XEN_HYPERVISOR_H_
 #define _DEV_XEN_HYPERVISOR_H_
 
+#define __XEN_INTERFACE_VERSION__ 0x00030207
+
 /*
  * xen.h
  */
