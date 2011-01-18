@@ -41,9 +41,10 @@ extern int xen_debug;
 struct xen_softc {
 	struct device	sc_dev;
 
-	int		sc_store_ec;
-	paddr_t		sc_store_pa;
-	vaddr_t		sc_store_va;
+	/* store */
+	int		sc_st_ec;	/* event chan */
+	paddr_t		sc_st_pa;	/* phys addr */
+	struct xenstore_domain_interface *sc_st_if; /* rings */
 };
 
 int xen_attach(struct xen_softc *);

@@ -63,6 +63,7 @@ xen_attach(struct xen_softc *sc)
 {
 	u_int32_t regs[4], msr;
 	paddr_t pa;
+	vaddr_t va;
 	u_int64_t val;
 
 	_cpuid(XEN_CPUID_LEAF(0), regs);
@@ -99,23 +100,24 @@ xen_attach(struct xen_softc *sc)
 		printf(": can't get store event chan\n");
 		return (1);
 	}
-	sc->sc_store_ec = val;
+	sc->sc_st_ec = val;
 
 	if (xen_hvm_param(HVM_PARAM_STORE_PFN, &val)) {
 		printf(": can't get store phys addr\n");
 		return (1);
 	}
-	sc->sc_store_pa = val << PAGE_SHIFT;
+	sc->sc_st_pa = val << PAGE_SHIFT;
 
-	/* Map store ring */
-	if ((sc->sc_store_va = uvm_km_alloc(kernel_map, PAGE_SIZE)) == 0) {
+	/* Map store rings */
+	if ((va = uvm_km_valloc(kernel_map, PAGE_SIZE)) == 0) {
 		printf(": no mem for store\n");
 		return (1);
 	}
-	pmap_kenter_pa(sc->sc_store_va, sc->sc_store_pa, VM_PROT_READ |
-	    VM_PROT_WRITE);
-	DPRINTF(XEN_D_INFO, (", store ec %d pa 0x%p va 0x%p", sc->sc_store_ec,
-	    sc->sc_store_pa, sc->sc_store_va));
+	pmap_kenter_pa(va, sc->sc_st_pa, UVM_PROT_RW);
+	pmap_update(pmap_kernel());
+	sc->sc_st_if = (void *)va;
+	DPRINTF(XEN_D_INFO, (", store ec %d pa 0x%p va 0x%p", sc->sc_st_ec,
+	    sc->sc_st_pa, va));
 
 	printf("\n");
 	return (0);
