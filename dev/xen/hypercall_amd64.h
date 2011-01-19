@@ -223,14 +223,14 @@ HYPERVISOR_update_va_mapping(
 {
 	return _hypercall3(int, update_va_mapping, va, new_val.pte, flags);
 }
+#endif
 
 static inline int
 HYPERVISOR_event_channel_op(
-       int cmd, void *op)
+	int cmd, void *op)
 {
-    return _hypercall2(int, event_channel_op, cmd, op);
+	return _hypercall2(int, event_channel_op, cmd, op);
 }
-#endif
 
 static inline int
 HYPERVISOR_xen_version(
