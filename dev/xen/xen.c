@@ -46,7 +46,7 @@ __asm(".pushsection .text\n\t"
       ".popsection");
 
 static inline int
-xen_hvm_param(int index, u_int64_t *valp)
+xen_hvm_getparam(int index, u_int64_t *valp)
 {
 	struct xen_hvm_param xhp;
 
@@ -99,13 +99,13 @@ xen_attach(struct xen_softc *sc)
 	wrmsr(msr, pa);
 
 	/* Get store params */
-	if (xen_hvm_param(HVM_PARAM_STORE_EVTCHN, &val)) {
+	if (xen_hvm_getparam(HVM_PARAM_STORE_EVTCHN, &val)) {
 		printf(": can't get store event chan\n");
 		return (1);
 	}
 	sc->sc_st_ec = val;
 
-	if (xen_hvm_param(HVM_PARAM_STORE_PFN, &val)) {
+	if (xen_hvm_getparam(HVM_PARAM_STORE_PFN, &val)) {
 		printf(": can't get store phys addr\n");
 		return (1);
 	}
