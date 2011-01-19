@@ -23,6 +23,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/device.h>
+#include <sys/malloc.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -65,6 +66,8 @@ xen_attach(struct xen_softc *sc)
 	paddr_t pa;
 	vaddr_t va;
 	u_int64_t val;
+	char *buf, *s;
+	int size, len;
 
 	_cpuid(XEN_CPUID_LEAF(0), regs);
 	DPRINTF(XEN_D_INFO, (": leaf 1 0x%08x 0x%08x 0x%08x 0x%08x",
@@ -119,7 +122,24 @@ xen_attach(struct xen_softc *sc)
 	DPRINTF(XEN_D_INFO, (", store ec %d pa 0x%p va 0x%p", sc->sc_st_ec,
 	    sc->sc_st_pa, va));
 
+	/* Get device list */
+	if (xen_store_list(sc, "device", &buf, &size)) {
+		printf(": can't get device list\n");
+		return (1);
+	}
+
 	printf("\n");
+
+	/* Attach child devices */
+	s = buf;
+	while (size) {
+		printf("%s\n", s);
+		len = strlen(s) + 1;
+		s += len;
+		size -= len;
+	}
+	free(buf, M_TEMP);
+
 	return (0);
 }
 

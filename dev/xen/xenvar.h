@@ -44,11 +44,15 @@ struct xen_softc {
 	/* store */
 	int		sc_st_ec;	/* event chan */
 	paddr_t		sc_st_pa;	/* phys addr */
-	struct xenstore_domain_interface *sc_st_if; /* rings */
+	volatile struct xenstore_domain_interface *sc_st_if; /* rings */
 };
 
+/* xen.c */
 int xen_attach(struct xen_softc *);
 int xen_intr(void *);
+
+/* xen_subr.c */
+int xen_store_list(struct xen_softc *, const char *, char **, int *);
 
 /* XXX: amd64 and i386 don't have unified cpuid() function yet */
 static inline void
