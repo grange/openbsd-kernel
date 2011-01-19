@@ -73,7 +73,7 @@ xen_attach(struct xen_softc *sc)
 	int tsize, dsize, len;
 
 	_cpuid(XEN_CPUID_LEAF(0), regs);
-	DPRINTF(XEN_D_INFO, (": leaf 1 0x%08x 0x%08x 0x%08x 0x%08x",
+	DPRINTF(XEN_D_INFO, (", leaf 1 0x%08x 0x%08x 0x%08x 0x%08x",
 	    regs[0], regs[1], regs[2], regs[3]));
 	if (memcmp(regs + 1, "XenVMMXenVMM", 12)) {
 		printf(": wrong signature\n");
@@ -87,7 +87,7 @@ xen_attach(struct xen_softc *sc)
 	_cpuid(XEN_CPUID_LEAF(1), regs);
 	DPRINTF(XEN_D_INFO, (", leaf 2 0x%08x 0x%08x 0x%08x 0x%08x",
 	    regs[0], regs[1], regs[2], regs[3]));
-	printf(": ver %d.%d", regs[0] >> 16, regs[0] & 0xffff);
+	DPRINTF(XEN_D_INFO, (", ver %d.%d", regs[0] >> 16, regs[0] & 0xffff));
 
 	_cpuid(XEN_CPUID_LEAF(2), regs);
 	DPRINTF(XEN_D_INFO, (", leaf 3 0x%08x 0x%08x 0x%08x 0x%08x",
@@ -138,7 +138,8 @@ xen_attach(struct xen_softc *sc)
 	while (tsize > 0) {
 		snprintf(path, sizeof(path), "device/%s", t);
 		if (xen_store_list(sc, path, &devs, &dsize)) {
-			printf(": can't get %s device list\n", t);
+			printf("%s: can't get %s device list\n",
+			    sc->sc_dev.dv_xname, t);
 			return (1);
 		}
 

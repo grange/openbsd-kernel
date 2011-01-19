@@ -99,9 +99,8 @@ xen_pci_attach(struct device *parent, struct device *self, void *aux)
 		printf("\n");
 		goto fail1;
 	}
-	printf(": %s\n", intrstr);
+	printf(": %s", intrstr);
 
-	printf("%s", self->dv_xname);
 	if (xen_attach(&sc->sc_xen))
 		goto fail2;
 
