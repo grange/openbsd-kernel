@@ -86,9 +86,75 @@ xen_store_list(struct xen_softc *sc, const char *path, char **bufp, int *sizep)
 }
 
 int
+xen_store_read(struct xen_softc *sc, const char *path, int *valp)
+{
+	struct xsd_sockmsg msg;
+	u_int32_t cons, prod;
+	int t;
+
+	msg.type = XS_READ;
+	msg.req_id = 0;
+	msg.tx_id = 0;
+	msg.len = strlen(path) + 1;
+
+	/* Write request */
+	cons = sc->sc_st_if->req_cons;
+	prod = sc->sc_st_if->req_prod;
+
+	memcpy((char *)sc->sc_st_if->req + prod, &msg, sizeof(msg));
+	prod += sizeof(msg);
+	memcpy((char *)sc->sc_st_if->req + prod, path, msg.len);
+	prod += msg.len;
+
+	sc->sc_st_if->req_prod = prod;
+	if (xen_event_send(sc->sc_st_ec))
+		return (1);
+
+	/* Read response */
+	cons = sc->sc_st_if->rsp_cons;
+	prod = sc->sc_st_if->rsp_prod;
+	for (t = 1000; t && cons == prod; t--) {
+		delay(1000);
+		prod = sc->sc_st_if->rsp_prod;
+	}
+	if (!t)
+		/* timeout */
+		return (1);
+
+	if (prod - cons < sizeof(msg))
+		return (1);
+	memcpy(&msg, (char *)sc->sc_st_if->rsp + cons, sizeof(msg));
+	cons += sizeof(msg);
+
+	if (prod - cons < msg.len)
+		return (1);
+	*valp = xen_atoi((char *)sc->sc_st_if->rsp + cons);
+	cons += msg.len;
+
+	sc->sc_st_if->rsp_cons = cons;
+	xen_event_send(sc->sc_st_ec);
+
+	return (0);
+}
+
+int
 xen_event_send(int ec)
 {
 	struct evtchn_send send = { .port = ec };
 
 	return (HYPERVISOR_event_channel_op(EVTCHNOP_send, &send));
+}
+
+int
+xen_atoi(const char *s)
+{
+	int val = 0, mul = 1;
+	int i;
+
+	for (i = strlen(s) - 1; i >= 0; i--) {
+		val += (s[i] - '0') * mul;
+		mul *= 10;
+	}
+
+	return val;
 }

@@ -37,6 +37,8 @@
 int xen_debug = XEN_D_ALL;	/* XXX: change to XEN_D_ERR on release */
 #endif
 
+int xen_print(void *, const char *);
+
 /* Allocate hypercall page in object file */
 __asm(".pushsection .text\n\t"
       ".globl hypercall_page\n\t"
@@ -66,8 +68,9 @@ xen_attach(struct xen_softc *sc)
 	paddr_t pa;
 	vaddr_t va;
 	u_int64_t val;
-	char *buf, *s;
-	int size, len;
+	char path[64];
+	char *types, *devs, *t, *d;
+	int tsize, dsize, len;
 
 	_cpuid(XEN_CPUID_LEAF(0), regs);
 	DPRINTF(XEN_D_INFO, (": leaf 1 0x%08x 0x%08x 0x%08x 0x%08x",
@@ -122,25 +125,56 @@ xen_attach(struct xen_softc *sc)
 	DPRINTF(XEN_D_INFO, (", store ec %d pa 0x%p va 0x%p", sc->sc_st_ec,
 	    sc->sc_st_pa, va));
 
-	/* Get device list */
-	if (xen_store_list(sc, "device", &buf, &size)) {
-		printf(": can't get device list\n");
+	/* Get device type list */
+	if (xen_store_list(sc, "device", &types, &tsize)) {
+		printf(": can't get device type list\n");
 		return (1);
 	}
 
 	printf("\n");
 
 	/* Attach child devices */
-	s = buf;
-	while (size) {
-		printf("%s\n", s);
-		len = strlen(s) + 1;
-		s += len;
-		size -= len;
+	t = types;
+	while (tsize > 0) {
+		snprintf(path, sizeof(path), "device/%s", t);
+		if (xen_store_list(sc, path, &devs, &dsize)) {
+			printf(": can't get %s device list\n", t);
+			return (1);
+		}
+
+		d = devs;
+		while (dsize > 0) {
+			struct xen_attach_args xa;
+
+			xa.xa_name = t;
+			xa.xa_id = xen_atoi(d);
+			config_found(&sc->sc_dev, &xa, xen_print);
+
+			len = strlen(d) + 1;
+			d += len;
+			dsize -= len;
+		}
+		free(devs, M_TEMP);
+
+		len = strlen(t) + 1;
+		t += len;
+		tsize -= len;
 	}
-	free(buf, M_TEMP);
+	free(types, M_TEMP);
 
 	return (0);
+}
+
+int
+xen_print(void *aux, const char *pnp)
+{
+	struct xen_attach_args *xa = aux;
+
+	if (pnp)
+		printf("%s at %s", xa->xa_name, pnp);
+	printf(" id %d", xa->xa_id);
+
+	return (UNCONF);
 }
 
 int

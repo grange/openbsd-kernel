@@ -19,7 +19,6 @@ define	radiobus {}
 define	i2cbus {}
 define	gpiobus {}
 define	onewirebus {}
-define	xenbus {}
 define	video {}
 
 # filesystem firmware loading attribute

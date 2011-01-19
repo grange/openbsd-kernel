@@ -813,6 +813,7 @@ attach	glxpcib at pci
 file	dev/pci/glxpcib.c		glxpcib
 
 # Xen platform device
-device	xen: xenbus
+define	xen {[id = -1]}
+device	xen: xen
 attach	xen at pci
 file	dev/pci/xen_pci.c		xen
