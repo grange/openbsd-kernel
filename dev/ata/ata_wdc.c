@@ -1,4 +1,4 @@
-/*      $OpenBSD: ata_wdc.c,v 1.35 2010/11/06 16:53:15 kettenis Exp $	*/
+/*      $OpenBSD: ata_wdc.c,v 1.38 2011/04/18 04:16:13 deraadt Exp $	*/
 /*	$NetBSD: ata_wdc.c,v 1.21 1999/08/09 09:43:11 bouyer Exp $	*/
 
 /*
@@ -64,6 +64,7 @@
 #include <sys/malloc.h>
 #include <sys/device.h>
 #include <sys/disklabel.h>
+#include <sys/disk.h>
 #include <sys/syslog.h>
 #include <sys/proc.h>
 
@@ -95,7 +96,7 @@ int wdcdebug_wd_mask = WDCDEBUG_WD_MASK;
 #define WDCDEBUG_PRINT(args, level)
 #endif
 
-#define ATA_DELAY 10000 /* 10s for a drive I/O */
+#define ATA_DELAY 45000 /* 45s for a drive I/O */
 
 struct cfdriver wdc_cd = {
 	NULL, "wdc", DV_DULL
@@ -111,6 +112,61 @@ int   wdc_ata_err(struct ata_drive_datas *, struct ata_bio *);
 #define WDC_ATA_NOERR 0x00 /* Drive doesn't report an error */
 #define WDC_ATA_RECOV 0x01 /* There was a recovered error */
 #define WDC_ATA_ERR   0x02 /* Drive reports an error */
+
+int
+wd_hibernate_io(dev_t dev, daddr_t blkno, caddr_t addr, size_t size, int wr, void *page)
+{
+	struct {
+		struct wd_softc wd;
+		struct wdc_xfer xfer;
+		struct channel_softc chp;
+	} *my = page;
+	struct wd_softc *real_wd, *wd = &my->wd;
+	struct wdc_xfer *xfer = &my->xfer;
+	struct channel_softc *chp = &my->chp;
+	struct ata_bio *ata_bio;
+	extern struct cfdriver wd_cd;
+
+	real_wd = (struct wd_softc *)disk_lookup(&wd_cd, DISKUNIT(dev));
+	if (real_wd == NULL)
+		return (ENODEV);
+
+	/*
+	 * Craft a fake set of softc and related structures
+	 * which we think the driver modifies.  Some of these will
+	 * have pointers which reach to unsafe places, but..
+	 */
+	bcopy(real_wd->drvp->chnl_softc, &my->chp, sizeof my->chp);
+	chp->ch_drive[0].chnl_softc = chp;
+	chp->ch_drive[1].chnl_softc = chp;
+
+	bcopy(real_wd, &my->wd, sizeof my->wd);
+	ata_bio = &wd->sc_wdc_bio;
+	ata_bio->wd = wd;		/* fixup ata_bio->wd */
+	wd->drvp = &chp->ch_drive[real_wd->drvp->drive];
+
+	/* Fill the request and submit it */
+	wd->sc_wdc_bio.blkno = blkno;
+	wd->sc_wdc_bio.flags = ATA_POLL | ATA_LBA48;
+	if (wr == 0)
+		wd->sc_wdc_bio.flags |= ATA_READ;
+	wd->sc_wdc_bio.bcount = size;
+	wd->sc_wdc_bio.databuf = addr;
+	wd->sc_wdc_bio.wd = wd;
+
+	bzero(&my->xfer, sizeof my->xfer);
+	xfer->c_flags |= C_PRIVATEXFER;	/* Our xfer is totally private */
+	xfer->c_flags |= C_POLL;
+	xfer->drive = wd->drvp->drive;
+	xfer->cmd = ata_bio;
+	xfer->databuf = ata_bio->databuf;
+	xfer->c_bcount = ata_bio->bcount;
+	xfer->c_start = wdc_ata_bio_start;
+	xfer->c_intr = wdc_ata_bio_intr;
+	xfer->c_kill_xfer = wdc_ata_bio_kill_xfer;
+	wdc_exec_xfer(chp, xfer);
+	return (ata_bio->flags & ATA_ITSDONE) ? 0 : 1;
+}
 
 /*
  * Handle block I/O operation. Return WDC_COMPLETE, WDC_QUEUED, or
@@ -364,6 +420,8 @@ intr:	/* Wait for IRQ (either real or polled) */
 	}
 	return;
 timeout:
+	if (chp->ch_status == 0xff)
+		return;
 	printf("%s:%d:%d: not ready, st=0x%b, err=0x%02x\n",
 	    chp->wdc->sc_dev.dv_xname, chp->channel, xfer->drive,
 	    chp->ch_status, WDCS_BITS, chp->ch_error);
@@ -513,7 +571,8 @@ wdc_ata_bio_done(struct channel_softc *chp, struct wdc_xfer *xfer)
 	    (u_int)xfer->c_flags),
 	    DEBUG_XFERS);
 
-	timeout_del(&chp->ch_timo);
+	if ((xfer->c_flags & C_PRIVATEXFER) == 0)
+		timeout_del(&chp->ch_timo);
 
 	/* feed back residual bcount to our caller */
 	ata_bio->bcount = xfer->c_bcount;
@@ -699,6 +758,11 @@ wdc_ata_err(struct ata_drive_datas *drvp, struct ata_bio *ata_bio)
 {
 	struct channel_softc *chp = drvp->chnl_softc;
 	ata_bio->error = 0;
+
+	if (chp->ch_status == 0xff) {
+		ata_bio->error = ERR_NODEV;
+		return WDC_ATA_ERR;
+	}
 	if (chp->ch_status & WDCS_BSY) {
 		ata_bio->error = TIMEOUT;
 		return WDC_ATA_ERR;

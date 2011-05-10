@@ -1,4 +1,4 @@
-/*	$OpenBSD: mnode.h,v 1.15 2010/04/06 19:09:44 miod Exp $ */
+/*	$OpenBSD: mnode.h,v 1.18 2011/04/17 17:44:24 miod Exp $ */
 
 /*
  * Copyright (c) 2004 Opsycon AB  (www.opsycon.se / www.opsycon.com)
@@ -26,8 +26,8 @@
  *
  */
 
-#ifndef __MACHINE_MNODE_H__
-#define __MACHINE_MNODE_H__
+#ifndef _MACHINE_MNODE_H_
+#define _MACHINE_MNODE_H_
 
 /*
  * Definitions for Nodes set up in M-Mode. Some stuff here
@@ -64,6 +64,11 @@
 /* Get typed address to nodes uncached space */
 #define IP27_UNCAC_ADDR(type, node, offs) \
 	((type)(IP27_NODE_UNCAC_BASE(node) + ((offs) & IP27_NODE_SIZE_MASK)))
+
+/*
+ * Convert a physical (XIO) address to a node number.
+ */
+#define	IP27_PHYS_TO_NODE(addr)	((addr) >> kl_n_shift)
 
 /*
  * IP27 platforms uses something called kldir to describe each
@@ -476,10 +481,13 @@ int	kl_scan_board(lboard_t *, uint, int (*)(klinfo_t *, void *), void *);
 void	kl_get_location(klinfo_t *, struct sgi_device_location *);
 void	kl_get_console_location(console_t *, struct sgi_device_location *);
 
+/* widget number of the XBow `hub', for each node */
+extern int kl_hub_widget[GDA_MAXNODES];
+
 extern int kl_n_mode;
 extern u_int kl_n_shift;
 extern klinfo_t *kl_glass_console;
 extern gda_t *gda;
 extern uint maxnodes;
 
-#endif /* __MACHINE_MNODE_H__ */
+#endif /* _MACHINE_MNODE_H_ */

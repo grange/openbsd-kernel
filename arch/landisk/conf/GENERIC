@@ -1,4 +1,4 @@
-# $OpenBSD: GENERIC,v 1.31 2011/01/08 11:56:30 damien Exp $
+# $OpenBSD: GENERIC,v 1.33 2011/04/17 19:18:11 deraadt Exp $
 #
 # For further information on compiling OpenBSD kernels, see the config(8)
 # man page.
@@ -25,8 +25,7 @@ option		PCIVERBOSE
 option		USER_PCICONF		# user-space PCI configuration
 option		USBVERBOSE
 
-#config		bsd	swap generic
-config		bsd	root on wd0a
+config		bsd	swap generic
 
 mainbus0 at root
 cpu0	at mainbus?
@@ -167,7 +166,7 @@ udl*		at uhub?
 wsdisplay*	at udl?
 
 # Bluetooth controllers
-ubt*	at uhub?		# USB Bluetooth
+ubt*	at uhub? disable	# USB Bluetooth
 bthub*	at ubt?
 
 bthidev* at bthub?		# Bluetooth HID support

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ffs_vnops.c,v 1.60 2010/12/29 21:28:45 thib Exp $	*/
+/*	$OpenBSD: ffs_vnops.c,v 1.62 2011/04/12 19:45:43 beck Exp $	*/
 /*	$NetBSD: ffs_vnops.c,v 1.7 1996/05/11 18:27:24 mycroft Exp $	*/
 
 /*
@@ -63,7 +63,6 @@
 #include <ufs/ffs/ffs_extern.h>
 
 struct vops ffs_vops = {
-	.vop_default	= eopnotsupp,
 	.vop_lookup	= ufs_lookup,
 	.vop_create	= ufs_create,
 	.vop_mknod	= ufs_mknod,
@@ -103,7 +102,6 @@ struct vops ffs_vops = {
 };
 
 struct vops ffs_specvops = {
-	.vop_default	= eopnotsupp,
 	.vop_close	= ufsspec_close,
 	.vop_access	= ufs_access,
 	.vop_getattr	= ufs_getattr,
@@ -145,7 +143,6 @@ struct vops ffs_specvops = {
 
 #ifdef FIFO
 struct vops ffs_fifovops = {
-	.vop_default	= eopnotsupp,
 	.vop_close	= ufsfifo_close,
 	.vop_access	= ufs_access,
 	.vop_getattr	= ufs_getattr,
@@ -302,6 +299,7 @@ ffs_write(void *v)
 	daddr64_t lbn;
 	off_t osize;
 	int blkoffset, error, extended, flags, ioflag, resid, size, xfersize;
+	extern int num_indirdep, max_indirdep;
 
 	extended = 0;
 	ioflag = ap->a_ioflag;
@@ -375,7 +373,11 @@ ffs_write(void *v)
 		if (uio->uio_offset + xfersize > DIP(ip, size)) {
 			DIP_ASSIGN(ip, size, uio->uio_offset + xfersize);
 			uvm_vnp_setsize(vp, DIP(ip, size));
-			extended = 1;
+			/* Are we extending into an indirect block? */
+			if (bp->b_lblkno < NDADDR)
+				extended = 1;
+			else
+				extended = 2;
 		}
 		(void)uvm_vnp_uncache(vp);
 
@@ -419,8 +421,20 @@ ffs_write(void *v)
 			uio->uio_offset -= resid - uio->uio_resid;
 			uio->uio_resid = resid;
 		}
-	} else if (resid > uio->uio_resid && (ioflag & IO_SYNC)) {
-		error = UFS_UPDATE(ip, MNT_WAIT);
+	} else if (resid > uio->uio_resid) {
+		if (ioflag & IO_SYNC)
+			error = UFS_UPDATE(ip, MNT_WAIT);
+		if (DOINGSOFTDEP(vp) && num_indirdep > max_indirdep)
+			if (extended > 1) {
+				/*
+				 * If the number of pending indirect block
+				 * dependencies is sufficiently close to the
+				 * maximum number of simultaneously mappable
+				 * buffers force a sync on the vnode to prevent
+				 * buffer cache exhaustion.
+				 */
+				VOP_FSYNC(vp, p->p_ucred, MNT_WAIT, p);
+			}
 	}
 	return (error);
 }

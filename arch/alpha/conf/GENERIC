@@ -1,4 +1,4 @@
-#	$OpenBSD: GENERIC,v 1.218 2010/11/26 20:13:53 miod Exp $
+#	$OpenBSD: GENERIC,v 1.221 2011/03/28 15:24:54 claudio Exp $
 #
 # For further information on compiling OpenBSD kernels, see the config(8)
 # man page.
@@ -43,7 +43,6 @@ option	WSDISPLAY_COMPAT_PCVT		# emulate some ioctls; needed for X11
 
 option		APERTURE		# in-kernel aperture driver for XFree86
 option		USER_PCICONF		# user-space PCI configuration
-#option		NTFS			# Experimental NTFS support
 
 config		bsd	swap generic
 
@@ -132,7 +131,7 @@ uvideo* at uhub?
 video*  at uvideo?
 
 # Bluetooth controllers
-ubt*	at uhub?			# USB Bluetooth
+ubt*	at uhub? disable		# USB Bluetooth
 bthub*	at ubt?
 
 bthidev* at bthub?			# Bluetooth HID support
@@ -300,6 +299,7 @@ urlphy*	at mii?				# Realtek RTL8150L internal PHY
 rgephy*	at mii?				# Realtek 8169S/8110S PHY
 ciphy*	at mii?				# Cicada CS8201 10/100/1000 copper PHY
 ipgphy*	at mii?				# IC Plus IP1000A PHYs
+mlphy*	at mii?				# Micro Linear 6692 PHY
 ukphy*	at mii?				# "unknown" PHYs
 
 # sensors

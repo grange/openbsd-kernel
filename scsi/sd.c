@@ -1,4 +1,4 @@
-/*	$OpenBSD: sd.c,v 1.219 2010/12/24 02:45:33 krw Exp $	*/
+/*	$OpenBSD: sd.c,v 1.225 2011/04/08 10:37:39 krw Exp $	*/
 /*	$NetBSD: sd.c,v 1.111 1997/04/02 02:29:41 mycroft Exp $	*/
 
 /*-
@@ -59,6 +59,7 @@
 #include <sys/buf.h>
 #include <sys/uio.h>
 #include <sys/malloc.h>
+#include <sys/pool.h>
 #include <sys/errno.h>
 #include <sys/device.h>
 #include <sys/disklabel.h>
@@ -137,7 +138,7 @@ sdmatch(struct device *parent, void *match, void *aux)
 	int priority;
 
 	(void)scsi_inqmatch(sa->sa_inqbuf,
-	    sd_patterns, sizeof(sd_patterns)/sizeof(sd_patterns[0]),
+	    sd_patterns, nitems(sd_patterns),
 	    sizeof(sd_patterns[0]), &priority);
 
 	return (priority);
@@ -221,16 +222,15 @@ sdattach(struct device *parent, struct device *self, void *aux)
 	if ((sc_link->flags & SDEV_REMOVABLE) != 0)
 		scsi_prevent(sc_link, PR_ALLOW, sd_autoconf);
 
-	printf("%s: ", sc->sc_dev.dv_xname);
 	switch (result) {
 	case SDGP_RESULT_OK:
-		printf("%lldMB, %lu bytes/sec, %lld sec total",
+		printf("%s: %lldMB, %lu bytes/sec, %lld sec total\n",
+		    sc->sc_dev.dv_xname,
 		    dp->disksize / (1048576 / dp->secsize), dp->secsize,
 		    dp->disksize);
 		break;
 
 	case SDGP_RESULT_OFFLINE:
-		printf("drive offline");
 		break;
 
 #ifdef DIAGNOSTIC
@@ -239,7 +239,6 @@ sdattach(struct device *parent, struct device *self, void *aux)
 		break;
 #endif
 	}
-	printf("\n");
 
 	memset(&dkc, 0, sizeof(dkc));
 	if (sd_ioctl_cache(sc, DIOCGCACHE, &dkc) == 0 && dkc.wrcache == 0) {
@@ -737,7 +736,7 @@ sdstart(struct scsi_xfer *xs)
 	/* move onto the next io */
 	if (ISSET(sc->flags, SDF_WAITING))
 		CLR(sc->flags, SDF_WAITING);
-	else if (bufq_peek(&sc->sc_bufq) != NULL)
+	else if (bufq_peek(&sc->sc_bufq))
 		scsi_xsh_add(&sc->sc_xsh);
 }
 
@@ -1010,7 +1009,9 @@ sdioctl(dev_t dev, u_long cmd, caddr_t addr, int flag, struct proc *p)
 int
 sd_ioctl_inquiry(struct sd_softc *sc, struct dk_inquiry *di)
 {
-	struct scsi_vpd_serial vpd;
+	struct scsi_vpd_serial *vpd;
+
+	vpd = dma_alloc(sizeof(*vpd), PR_WAITOK | PR_ZERO);
 
 	bzero(di, sizeof(struct dk_inquiry));
 	scsi_strvis(di->vendor, sc->sc_link->inqdata.vendor,
@@ -1021,12 +1022,13 @@ sd_ioctl_inquiry(struct sd_softc *sc, struct dk_inquiry *di)
 	    sizeof(sc->sc_link->inqdata.revision));
 
 	/* the serial vpd page is optional */
-	if (scsi_inquire_vpd(sc->sc_link, &vpd, sizeof(vpd),
+	if (scsi_inquire_vpd(sc->sc_link, vpd, sizeof(*vpd),
 	    SI_PG_SERIAL, 0) == 0)
-		scsi_strvis(di->serial, vpd.serial, sizeof(vpd.serial));
+		scsi_strvis(di->serial, vpd->serial, sizeof(vpd->serial));
 	else
-		strlcpy(di->serial, "(unknown)", sizeof(vpd.serial));
+		strlcpy(di->serial, "(unknown)", sizeof(vpd->serial));
 
+	dma_free(vpd, sizeof(*vpd));
 	return (0);
 }
 
@@ -1044,11 +1046,10 @@ sd_ioctl_cache(struct sd_softc *sc, long cmd, struct dk_cache *dkc)
 
 	/* see if the adapter has special handling */
 	rv = scsi_do_ioctl(sc->sc_link, cmd, (caddr_t)dkc, 0);
-	if (rv != ENOTTY) {
+	if (rv != ENOTTY)
 		return (rv);
-	}
 
-	buf = malloc(sizeof(*buf), M_TEMP, M_WAITOK|M_CANFAIL);
+	buf = dma_alloc(sizeof(*buf), PR_WAITOK);
 	if (buf == NULL)
 		return (ENOMEM);
 
@@ -1097,7 +1098,7 @@ sd_ioctl_cache(struct sd_softc *sc, long cmd, struct dk_cache *dkc)
 	}
 
 done:
-	free(buf, M_TEMP);
+	dma_free(buf, sizeof(*buf));
 	return (rv);
 }
 
@@ -1226,6 +1227,9 @@ sd_interpret_sense(struct scsi_xfer *xs)
 		    SCSI_IGNORE_ILLEGAL_REQUEST | SCSI_NOSLEEP);
 		if (retval == 0)
 			retval = ERESTART;
+		else if (retval == ENOMEM)
+			/* Can't issue the command. Fall back on a delay. */
+			retval = scsi_delay(xs, 5);
 		else
 			SC_DEBUG(sc_link, SDEV_DB1, ("spin up failed (%#x)\n",
 			    retval));
@@ -1414,7 +1418,7 @@ sd_get_parms(struct sd_softc *sc, struct disk_parms *dp, int flags)
 
 	dp->disksize = scsi_size(sc->sc_link, flags, &sssecsize);
 
-	buf = malloc(sizeof(*buf), M_TEMP, M_NOWAIT);
+	buf = dma_alloc(sizeof(*buf), PR_NOWAIT);
 	if (buf == NULL)
 		goto validate;
 
@@ -1500,7 +1504,7 @@ sd_get_parms(struct sd_softc *sc, struct disk_parms *dp, int flags)
 
 validate:
 	if (buf)
-		free(buf, M_TEMP);
+		dma_free(buf, sizeof(*buf));
 
 	if (dp->disksize == 0)
 		return (SDGP_RESULT_OFFLINE);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: param.h,v 1.7 2008/05/03 20:18:24 martin Exp $	*/
+/*	$OpenBSD: param.h,v 1.9 2011/04/07 15:45:18 miod Exp $	*/
 /*     OpenBSD: param.h,v 1.29 2004/08/06 22:31:31 mickey Exp 	*/
 
 /*
@@ -41,8 +41,8 @@
  *	@(#)param.h	8.1 (Berkeley) 6/11/93
  */
 
-#ifndef _SOLBOURNE_PARAM_H_
-#define _SOLBOURNE_PARAM_H_
+#ifndef _MACHINE_PARAM_H_
+#define _MACHINE_PARAM_H_
 
 #define	_MACHINE	solbourne
 #define	MACHINE		"solbourne"
@@ -58,7 +58,7 @@
 
 /*
  * Round p (pointer or byte index) up to a correctly-aligned value for
- * the machine's strictest data type.  The result is u_int and must be
+ * the machine's strictest data type.  The result is u_long and must be
  * cast to any desired pointer type.
  *
  * ALIGNED_POINTER is a boolean macro that checks whether an address
@@ -68,7 +68,7 @@
  *
  */
 #define	ALIGNBYTES		7
-#define	ALIGN(p)		(((u_int)(p) + ALIGNBYTES) & ~ALIGNBYTES)
+#define	ALIGN(p)		(((u_long)(p) + ALIGNBYTES) & ~ALIGNBYTES)
 #define ALIGNED_POINTER(p,t)	((((u_long)(p)) & (sizeof(t)-1)) == 0)
 
 #define SUN4_PGSHIFT	13	/* for a sun4 machine */
@@ -163,4 +163,4 @@ extern int mmumod;
 #define PAGE_MASK	(PAGE_SIZE - 1)
 #define PAGE_SHIFT	SUN4_PGSHIFT
 
-#endif /* _SOLBOURNE_PARAM_H_ */
+#endif /* _MACHINE_PARAM_H_ */

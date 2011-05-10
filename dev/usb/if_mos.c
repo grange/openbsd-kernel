@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_mos.c,v 1.12 2010/12/06 04:41:39 jakemsr Exp $	*/
+/*	$OpenBSD: if_mos.c,v 1.14 2011/02/21 19:48:41 stsp Exp $	*/
 
 /*
  * Copyright (c) 2008 Johann Christian Rode <jcrode@gmx.net>
@@ -719,7 +719,7 @@ mos_attach(struct device *parent, struct device *self, void *aux)
 	/* Initialize interface info.*/
 	ifp = GET_IFP(sc);
 	ifp->if_softc = sc;
-	ifp->if_flags = IFF_SIMPLEX | IFF_MULTICAST;
+	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_ioctl = mos_ioctl;
 	ifp->if_start = mos_start;
 	ifp->if_watchdog = mos_watchdog;
@@ -753,9 +753,6 @@ mos_attach(struct device *parent, struct device *self, void *aux)
 	timeout_set(&sc->mos_stat_ch, mos_tick, sc);
 
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->mos_udev,
-			   &sc->mos_dev);
 }
 
 int
@@ -813,9 +810,6 @@ mos_detach(struct device *self, int flags)
 		usb_detach_wait(&sc->mos_dev);
 	}
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->mos_udev,
-			   &sc->mos_dev);
 
 	return (0);
 }

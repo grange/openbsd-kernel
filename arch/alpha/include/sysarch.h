@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysarch.h,v 1.5 2008/06/26 05:42:08 ray Exp $	*/
+/*	$OpenBSD: sysarch.h,v 1.7 2011/04/23 21:34:02 martynas Exp $	*/
 /*	$NetBSD: sysarch.h,v 1.8 2001/04/26 03:10:46 ross Exp $	*/
 
 /*-
@@ -30,8 +30,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _ALPHA_SYSARCH_H_
-#define _ALPHA_SYSARCH_H_
+#ifndef _MACHINE_SYSARCH_H_
+#define _MACHINE_SYSARCH_H_
 
 #include <machine/ieeefp.h>
 
@@ -54,8 +54,8 @@ struct alpha_fp_c_args {
 	uint64_t fp_c;
 };
 
-#ifdef _KERNEL
+#ifndef _KERNEL
 int	sysarch(int, void *);
-#endif /* _KERNEL */
+#endif /* !_KERNEL */
 
-#endif /* !_ALPHA_SYSARCH_H_ */
+#endif /* !_MACHINE_SYSARCH_H_ */

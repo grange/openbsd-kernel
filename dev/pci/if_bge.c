@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_bge.c,v 1.303 2010/09/20 07:40:38 deraadt Exp $	*/
+/*	$OpenBSD: if_bge.c,v 1.306 2011/04/05 18:01:21 henning Exp $	*/
 
 /*
  * Copyright (c) 2001 Wind River Systems
@@ -1464,6 +1464,14 @@ bge_blockinit(struct bge_softc *sc)
 		    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
 	}
 
+	/* Choose de-pipeline mode for BCM5906 A0, A1 and A2. */
+	if (BGE_ASICREV(sc->bge_chipid) == BGE_ASICREV_BCM5906) {
+		if (sc->bge_chipid == BGE_CHIPID_BCM5906_A0 ||
+		    sc->bge_chipid == BGE_CHIPID_BCM5906_A1 ||
+		    sc->bge_chipid == BGE_CHIPID_BCM5906_A2)
+			CSR_WRITE_4(sc, BGE_ISO_PKT_TX,
+			    (CSR_READ_4(sc, BGE_ISO_PKT_TX) & ~3) | 2);
+	}
 	/*
 	 * Set the BD ring replenish thresholds. The recommended
 	 * values are 1/8th the number of descriptors allocated to
@@ -1794,12 +1802,12 @@ bge_attach(struct device *parent, struct device *self, void *aux)
 	struct pci_attach_args	*pa = aux;
 	pci_chipset_tag_t	pc = pa->pa_pc;
 	const struct bge_revision *br;
-	pcireg_t		pm_ctl, memtype, subid;
+	pcireg_t		pm_ctl, memtype, subid, reg;
 	pci_intr_handle_t	ih;
 	const char		*intrstr = NULL;
 	bus_size_t		size;
 	bus_dma_segment_t	seg;
-	int			rseg, gotenaddr = 0;
+	int			rseg, gotenaddr = 0, aspm_off;
 	u_int32_t		hwcfg = 0;
 	u_int32_t		mac_addr = 0;
 	u_int32_t		misccfg;
@@ -1885,7 +1893,13 @@ bge_attach(struct device *parent, struct device *self, void *aux)
 	 * PCI Express or PCI-X controller check.
 	 */
 	if (pci_get_capability(pa->pa_pc, pa->pa_tag, PCI_CAP_PCIEXPRESS,
-	    NULL, NULL) != 0) {
+	    &aspm_off, NULL) != 0) {
+		/* Disable PCIe Active State Power Management (ASPM). */
+		reg = pci_conf_read(pa->pa_pc, pa->pa_tag,
+		    aspm_off + PCI_PCIE_LCSR);
+		reg &= ~(PCI_PCIE_LCSR_ASPM_L0S | PCI_PCIE_LCSR_ASPM_L1);
+		pci_conf_write(pa->pa_pc, pa->pa_tag,
+		    aspm_off + PCI_PCIE_LCSR, reg);
 		sc->bge_flags |= BGE_PCIE;
 	} else {
 		if ((pci_conf_read(pa->pa_pc, pa->pa_tag, BGE_PCI_PCISTATE) &
@@ -3024,8 +3038,8 @@ bge_encap(struct bge_softc *sc, struct mbuf *m_head, u_int32_t *txidx)
 	if (m_head->m_pkthdr.csum_flags) {
 		if (m_head->m_pkthdr.csum_flags & M_IPV4_CSUM_OUT)
 			csum_flags |= BGE_TXBDFLAG_IP_CSUM;
-		if (m_head->m_pkthdr.csum_flags & (M_TCPV4_CSUM_OUT |
-		    M_UDPV4_CSUM_OUT)) {
+		if (m_head->m_pkthdr.csum_flags & (M_TCP_CSUM_OUT |
+		    M_UDP_CSUM_OUT)) {
 			csum_flags |= BGE_TXBDFLAG_TCP_UDP_CSUM;
 			if (m_head->m_pkthdr.len < ETHER_MIN_NOPAD &&
 			    bge_cksum_pad(m_head) != 0)

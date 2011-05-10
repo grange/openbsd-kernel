@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_pool.c,v 1.99 2010/11/03 17:49:42 mikeb Exp $	*/
+/*	$OpenBSD: subr_pool.c,v 1.104 2011/04/18 19:23:46 art Exp $	*/
 /*	$NetBSD: subr_pool.c,v 1.61 2001/09/26 07:14:56 chs Exp $	*/
 
 /*-
@@ -42,7 +42,7 @@
 #include <sys/sysctl.h>
 
 #include <uvm/uvm.h>
-
+#include <dev/rndvar.h>
 
 /*
  * Pool resource management utility.
@@ -74,6 +74,7 @@ struct pool_item_header {
 	caddr_t			ph_page;	/* this page's address */
 	caddr_t			ph_colored;	/* page's colored address */
 	int			ph_pagesize;
+	int			ph_magic;
 };
 
 struct pool_item {
@@ -88,6 +89,12 @@ struct pool_item {
 #define	PI_MAGIC DEADBEEF1
 #else
 #define	PI_MAGIC 0xdeafbeef
+#endif
+
+#ifdef POOL_DEBUG
+int	pool_debug = 1;
+#else
+int	pool_debug = 0;
 #endif
 
 #define	POOL_NEEDS_CATCHUP(pp)						\
@@ -394,8 +401,7 @@ pool_init(struct pool *pp, size_t size, u_int align, u_int ioff, int flags,
 	}
 
 	/* pglistalloc/constraint parameters */
-	pp->pr_crange = &no_constraint;
-	pp->pr_pa_nsegs = 0;
+	pp->pr_crange = &kp_dirty;
 
 	/* Insert this into the list of all pools. */
 	TAILQ_INSERT_HEAD(&pool_head, pp, pr_poollist);
@@ -441,7 +447,8 @@ pool_alloc_item_header(struct pool *pp, caddr_t storage, int flags)
 	else
 		ph = pool_get(&phpool, (flags & ~(PR_WAITOK | PR_ZERO)) |
 		    PR_NOWAIT);
-
+	if (pool_debug)
+		ph->ph_magic = PI_MAGIC;
 	return (ph);
 }
 
@@ -611,13 +618,15 @@ startover:
 		    "page %p; item addr %p; offset 0x%x=0x%x",
 		    pp->pr_wchan, ph->ph_page, pi, 0, pi->pi_magic);
 #ifdef POOL_DEBUG
-	for (ip = (int *)pi, i = sizeof(*pi) / sizeof(int);
-	    i < pp->pr_size / sizeof(int); i++) {
-		if (ip[i] != PI_MAGIC) {
-			panic("pool_do_get(%s): free list modified: "
-			    "page %p; item addr %p; offset 0x%x=0x%x",
-			    pp->pr_wchan, ph->ph_page, pi,
-			    i * sizeof(int), ip[i]);
+	if (pool_debug && ph->ph_magic) {
+		for (ip = (int *)pi, i = sizeof(*pi) / sizeof(int);
+		    i < pp->pr_size / sizeof(int); i++) {
+			if (ip[i] != ph->ph_magic) {
+				panic("pool_do_get(%s): free list modified: "
+				    "page %p; item addr %p; offset 0x%x=0x%x",
+				    pp->pr_wchan, ph->ph_page, pi,
+				    i * sizeof(int), ip[i]);
+			}
 		}
 	}
 #endif /* POOL_DEBUG */
@@ -731,9 +740,11 @@ pool_do_put(struct pool *pp, void *v)
 #ifdef DIAGNOSTIC
 	pi->pi_magic = PI_MAGIC;
 #ifdef POOL_DEBUG
-	for (ip = (int *)pi, i = sizeof(*pi)/sizeof(int);
-	    i < pp->pr_size / sizeof(int); i++)
-		ip[i] = PI_MAGIC;
+	if (ph->ph_magic) {
+		for (ip = (int *)pi, i = sizeof(*pi)/sizeof(int);
+		    i < pp->pr_size / sizeof(int); i++)
+			ip[i] = ph->ph_magic;
+	}
 #endif /* POOL_DEBUG */
 #endif /* DIAGNOSTIC */
 
@@ -886,9 +897,11 @@ pool_prime_page(struct pool *pp, caddr_t storage, struct pool_item_header *ph)
 #ifdef DIAGNOSTIC
 		pi->pi_magic = PI_MAGIC;
 #ifdef POOL_DEBUG
-		for (ip = (int *)pi, i = sizeof(*pi)/sizeof(int);
-		    i < pp->pr_size / sizeof(int); i++)
-			ip[i] = PI_MAGIC;
+		if (ph->ph_magic) {
+			for (ip = (int *)pi, i = sizeof(*pi)/sizeof(int);
+			    i < pp->pr_size / sizeof(int); i++)
+				ip[i] = ph->ph_magic;
+		}
 #endif /* POOL_DEBUG */
 #endif /* DIAGNOSTIC */
 		cp = (caddr_t)(cp + pp->pr_size);
@@ -999,18 +1012,9 @@ done:
 }
 
 void
-pool_set_constraints(struct pool *pp, struct uvm_constraint_range *range,
-    int nsegs)
+pool_set_constraints(struct pool *pp, const struct kmem_pa_mode *mode)
 {
-	/*
-	 * Subsequent changes to the constrictions are only
-	 * allowed to make them _more_ strict.
-	 */
-	KASSERT(pp->pr_crange->ucr_high >= range->ucr_high &&
-	    pp->pr_crange->ucr_low <= range->ucr_low);
-
-	pp->pr_crange = range;
-	pp->pr_pa_nsegs = nsegs;
+	pp->pr_crange = mode;
 }
 
 void
@@ -1067,6 +1071,18 @@ pool_reclaim(struct pool *pp)
 	}
 
 	return (1);
+}
+
+/*
+ * Release all complete pages that have not been used recently
+ * from all pools.
+ */
+void
+pool_reclaim_all(void)
+{
+	struct pool	*pp;
+	TAILQ_FOREACH(pp, &pool_head, pr_poollist)
+		pool_reclaim(pp);
 }
 
 #ifdef DDB
@@ -1261,14 +1277,16 @@ pool_chk_page(struct pool *pp, const char *label, struct pool_item_header *ph)
 			    0, pi->pi_magic);
 		}
 #ifdef POOL_DEBUG
-		for (ip = (int *)pi, i = sizeof(*pi) / sizeof(int);
-		    i < pp->pr_size / sizeof(int); i++) {
-			if (ip[i] != PI_MAGIC) {
-				printf("pool(%s): free list modified: "
-				    "page %p; item ordinal %d; addr %p "
-				    "(p %p); offset 0x%x=0x%x\n",
-				    pp->pr_wchan, ph->ph_page, n, pi,
-				    page, i * sizeof(int), ip[i]);
+		if (pool_debug && ph->ph_magic) {
+			for (ip = (int *)pi, i = sizeof(*pi) / sizeof(int);
+			    i < pp->pr_size / sizeof(int); i++) {
+				if (ip[i] != ph->ph_magic) {
+					printf("pool(%s): free list modified: "
+					    "page %p; item ordinal %d; addr %p "
+					    "(p %p); offset 0x%x=0x%x\n",
+					    pp->pr_wchan, ph->ph_page, n, pi,
+					    page, i * sizeof(int), ip[i]);
+				}
 			}
 		}
 
@@ -1467,32 +1485,36 @@ pool_allocator_free(struct pool *pp, void *v)
 void *
 pool_page_alloc(struct pool *pp, int flags, int *slowdown)
 {
-	int kfl = (flags & PR_WAITOK) ? 0 : UVM_KMF_NOWAIT;
+	struct kmem_dyn_mode kd = KMEM_DYN_INITIALIZER;
 
-	return (uvm_km_getpage_pla(kfl, slowdown, pp->pr_crange->ucr_low,
-	    pp->pr_crange->ucr_high, 0, 0));
+	kd.kd_waitok = (flags & PR_WAITOK);
+	kd.kd_slowdown = slowdown;
+
+	return (km_alloc(PAGE_SIZE, &kv_page, pp->pr_crange, &kd));
 }
 
 void
 pool_page_free(struct pool *pp, void *v)
 {
-	uvm_km_putpage(v);
+	km_free(v, PAGE_SIZE, &kv_page, pp->pr_crange);
 }
 
 void *
 pool_large_alloc(struct pool *pp, int flags, int *slowdown)
 {
-	int kfl = (flags & PR_WAITOK) ? 0 : UVM_KMF_NOWAIT;
-	vaddr_t va;
+	struct kmem_dyn_mode kd = KMEM_DYN_INITIALIZER;
+	void *v;
 	int s;
 
+	kd.kd_waitok = (flags & PR_WAITOK);
+	kd.kd_slowdown = slowdown;
+
 	s = splvm();
-	va = uvm_km_kmemalloc_pla(kmem_map, NULL, pp->pr_alloc->pa_pagesz, 0,
-	    kfl, pp->pr_crange->ucr_low, pp->pr_crange->ucr_high,
-	    0, 0, pp->pr_pa_nsegs);
+	v = km_alloc(pp->pr_alloc->pa_pagesz, &kv_intrsafe, pp->pr_crange,
+	    &kd);
 	splx(s);
 
-	return ((void *)va);
+	return (v);
 }
 
 void
@@ -1501,23 +1523,23 @@ pool_large_free(struct pool *pp, void *v)
 	int s;
 
 	s = splvm();
-	uvm_km_free(kmem_map, (vaddr_t)v, pp->pr_alloc->pa_pagesz);
+	km_free(v, pp->pr_alloc->pa_pagesz, &kv_intrsafe, pp->pr_crange);
 	splx(s);
 }
 
 void *
 pool_large_alloc_ni(struct pool *pp, int flags, int *slowdown)
 {
-	int kfl = (flags & PR_WAITOK) ? 0 : UVM_KMF_NOWAIT;
+	struct kmem_dyn_mode kd = KMEM_DYN_INITIALIZER;
 
-	return ((void *)uvm_km_kmemalloc_pla(kernel_map, uvm.kernel_object,
-	    pp->pr_alloc->pa_pagesz, 0, kfl,
-	    pp->pr_crange->ucr_low, pp->pr_crange->ucr_high,
-	    0, 0, pp->pr_pa_nsegs));
+	kd.kd_waitok = (flags & PR_WAITOK);
+	kd.kd_slowdown = slowdown;
+
+	return (km_alloc(pp->pr_alloc->pa_pagesz, &kv_any, pp->pr_crange, &kd));
 }
 
 void
 pool_large_free_ni(struct pool *pp, void *v)
 {
-	uvm_km_free(kernel_map, (vaddr_t)v, pp->pr_alloc->pa_pagesz);
+	km_free(v, pp->pr_alloc->pa_pagesz, &kv_any, pp->pr_crange);
 }

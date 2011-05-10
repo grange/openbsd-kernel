@@ -1,4 +1,4 @@
-/*	$OpenBSD: ieee80211_input.c,v 1.116 2010/06/07 16:51:22 damien Exp $	*/
+/*	$OpenBSD: ieee80211_input.c,v 1.119 2011/04/05 11:48:28 blambert Exp $	*/
 
 /*-
  * Copyright (c) 2001 Atsushi Onoe
@@ -789,7 +789,7 @@ ieee80211_deliver_data(struct ieee80211com *ic, struct mbuf *m,
 		int error, len;
 
 		if (ETHER_IS_MULTICAST(eh->ether_dhost)) {
-			m1 = m_copym(m, 0, M_COPYALL, M_DONTWAIT);
+			m1 = m_copym2(m, 0, M_COPYALL, M_DONTWAIT);
 			if (m1 == NULL)
 				ifp->if_oerrors++;
 			else
@@ -842,6 +842,8 @@ ieee80211_deliver_data(struct ieee80211com *ic, struct mbuf *m,
  * is 32 bytes while QoS+LLC is 34 bytes).  Some devices are smart and
  * add 2 padding bytes after the 802.11 header in the QoS case so this
  * function is there for stupid drivers/devices only.
+ *
+ * XXX -- this is horrible
  */
 struct mbuf *
 ieee80211_align_mbuf(struct mbuf *m)
@@ -861,7 +863,7 @@ ieee80211_align_mbuf(struct mbuf *m)
 				m_freem(m);
 				return NULL;
 			}
-			if (m_dup_pkthdr(n, m)) {
+			if (m_dup_pkthdr(n, m, M_DONTWAIT)) {
 				m_free(n);
 				m_freem(m);
 				return (NULL);
@@ -1379,10 +1381,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 			}
 			chan = frm[2];
 			break;
-		case IEEE80211_ELEMID_TIM:
-			break;
-		case IEEE80211_ELEMID_IBSSPARMS:
-			break;
 		case IEEE80211_ELEMID_XRATES:
 			xrates = frm;
 			break;
@@ -1398,8 +1396,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 			break;
 		case IEEE80211_ELEMID_EDCAPARMS:
 			edcaie = frm;
-			break;
-		case IEEE80211_ELEMID_QOS_CAP:
 			break;
 #ifndef IEEE80211_NO_HT
 		case IEEE80211_ELEMID_HTCAPS:
@@ -1421,11 +1417,6 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, struct mbuf *m,
 				    frm[5] == 2 && frm[6] == 1)
 					wmmie = frm;
 			}
-			break;
-		default:
-			DPRINTF(("element id %u/len %u ignored\n",
-			    frm[0], frm[1]));
-			ic->ic_stats.is_rx_elem_unknown++;
 			break;
 		}
 		frm += 2 + frm[1];

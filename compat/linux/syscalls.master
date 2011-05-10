@@ -1,4 +1,4 @@
-	$OpenBSD: syscalls.master,v 1.51 2010/06/30 21:54:12 guenther Exp $
+	$OpenBSD: syscalls.master,v 1.55 2011/04/05 15:44:40 pirofti Exp $
 ;	$NetBSD: syscalls.master,v 1.15 1995/12/18 14:35:10 fvdl Exp $
 
 ;	@(#)syscalls.master	8.1 (Berkeley) 7/19/93
@@ -212,7 +212,8 @@
 			    caddr_t ptr); }
 118	NOARGS		{ int sys_fsync(int fd); }
 119	STD		{ int linux_sys_sigreturn(struct linux_sigcontext *scp); }
-120	STD		{ int linux_sys_clone(int flags, void *stack); }
+120	STD		{ int linux_sys_clone(int flags, void *stack, \
+			    void *parent_tidptr, void *tls, void *child_tidptr); }
 121	NOARGS		{ int compat_09_sys_setdomainname(char *name, \
 			    int len); }
 122	STD		{ int linux_sys_uname(struct linux_utsname *up); }
@@ -223,7 +224,7 @@
 123	STD		{ int linux_sys_modify_ldt(void); }
 #endif
 124	STD		{ int linux_sys_adjtimex(void); }
-125	NOARGS		{ int sys_mprotect(caddr_t addr, int len, int prot); }
+125	STD		{ int linux_sys_mprotect(caddr_t addr, int len, int prot); }
 126	STD		{ int linux_sys_sigprocmask(int how, \
 			    linux_old_sigset_t *set, linux_old_sigset_t *oset); }
 127	STD		{ int linux_sys_create_module(void); }
@@ -383,8 +384,10 @@
 240	UNIMPL		linux_sys_futex
 241	UNIMPL		linux_sys_sched_setaffinity
 242	UNIMPL		linux_sys_sched_getaffinity
-243	UNIMPL		linux_sys_set_thread_area
-244	UNIMPL		linux_sys_get_thread_area
+243	STD		{ int linux_sys_set_thread_area(	\
+			    struct l_segment_descriptor *desc); }
+244	STD		{ int linux_sys_get_thread_area(	\
+			    struct l_segment_descriptor *desc); }
 245	UNIMPL		linux_sys_io_setup
 246	UNIMPL		linux_sys_io_destroy
 247	UNIMPL		linux_sys_io_getevents
@@ -398,13 +401,15 @@
 255	UNIMPL		linux_sys_epoll_ctl
 256	UNIMPL		linux_sys_epoll_wait
 257	UNIMPL		linux_sys_remap_file_pages
-258	UNIMPL		linux_sys_set_tid_address
+258	STD		{ int linux_sys_set_tid_address(void *tidptr); }
 259	UNIMPL		linux_sys_timer_create
 260	UNIMPL		linux_sys_timer_settime
 261	UNIMPL		linux_sys_timer_gettime
 262	UNIMPL		linux_sys_timer_getoverrun
 263	UNIMPL		linux_sys_timer_delete
 264	UNIMPL		linux_sys_clock_settime
-265	UNIMPL		linux_sys_clock_gettime
-266	UNIMPL		linux_sys_clock_getres
+265	STD		{ int linux_sys_clock_gettime(clockid_t which, \
+			    struct l_timespec *tp); }
+266	STD		{ int linux_sys_clock_getres(clockid_t which, \
+			    struct l_timespec *tp); }
 267	UNIMPL		linux_sys_clock_nanosleep

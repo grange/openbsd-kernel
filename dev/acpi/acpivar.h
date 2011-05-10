@@ -1,4 +1,4 @@
-/*	$OpenBSD: acpivar.h,v 1.69 2011/01/02 04:56:57 jordan Exp $	*/
+/*	$OpenBSD: acpivar.h,v 1.71 2011/04/15 17:34:51 oga Exp $	*/
 /*
  * Copyright (c) 2005 Thorsten Lockert <tholo@sigmasoft.com>
  *
@@ -49,9 +49,6 @@ struct acpivideo_softc {
 
 	struct acpi_softc *sc_acpi;
 	struct aml_node	*sc_devnode;
-
-	int	*sc_dod;
-	size_t	sc_dod_len;
 };
 
 struct acpi_attach_args {
@@ -61,11 +58,6 @@ struct acpi_attach_args {
 	void		*aaa_table;
 	struct aml_node *aaa_node;
 	const char	*aaa_dev;
-};
-
-struct acpivideo_attach_args {
-	struct acpi_attach_args	aaa;
-	int dod;
 };
 
 struct acpi_mem_map {
@@ -275,15 +267,6 @@ struct acpi_dev_rank {
 #define	ACPI_IOC_GETFACS	_IOR('A', 0, struct acpi_facs)
 #define	ACPI_IOC_GETTABLE	_IOWR('A', 1, struct acpi_table)
 #define ACPI_IOC_SETSLEEPSTATE	_IOW('A', 2, int)
-
-#define	ACPI_EV_PWRBTN		0x0001	/* Power button was pushed */
-#define	ACPI_EV_SLPBTN		0x0002	/* Sleep button was pushed */
-
-#define	ACPI_EVENT_MASK		0x0003
-
-#define	ACPI_EVENT_COMPOSE(t,i)	(((i) & 0x7fff) << 16 | ((t) & ACPI_EVENT_MASK))
-#define	ACPI_EVENT_TYPE(e)	((e) & ACPI_EVENT_MASK)
-#define	ACPI_EVENT_INDEX(e)	((e) >> 16)
 
 #if defined(_KERNEL)
 struct   acpi_gas;

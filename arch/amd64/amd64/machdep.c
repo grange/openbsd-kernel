@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.130 2011/01/13 20:34:04 mikeb Exp $	*/
+/*	$OpenBSD: machdep.c,v 1.141 2011/04/26 17:33:17 jsing Exp $	*/
 /*	$NetBSD: machdep.c,v 1.3 2003/05/07 22:58:18 fvdl Exp $	*/
 
 /*-
@@ -106,7 +106,6 @@
 #include <machine/reg.h>
 #include <machine/specialreg.h>
 #include <machine/fpu.h>
-#include <machine/mtrr.h>
 #include <machine/biosvar.h>
 #include <machine/mpbiosvar.h>
 #include <machine/reg.h>
@@ -227,8 +226,6 @@ paddr_t avail_end;
 
 void (*delay_func)(int) = i8254_delay;
 void (*initclock_func)(void) = i8254_initclocks;
-
-struct mtrr_funcs *mtrr_funcs;
 
 /*
  * Format of boot information passed to us by 32-bit /boot
@@ -371,6 +368,7 @@ x86_64_proc0_tss_ldt_init(void)
 
 	cpu_info_primary.ci_curpcb = pcb = &proc0.p_addr->u_pcb;
 	pcb->pcb_cr0 = rcr0();
+	pcb->pcb_fsbase = 0;
 	pcb->pcb_kstack = (u_int64_t)proc0.p_addr + USPACE - 16;
 	proc0.p_md.md_regs = (struct trapframe *)pcb->pcb_kstack - 1;
 
@@ -658,9 +656,11 @@ sys_sigreturn(struct proc *p, void *v, register_t *retval)
 		fpusave_proc(p, 0);
 
 	if (ksc.sc_fpstate) {
-		if ((error = copyin(ksc.sc_fpstate,
-		    &p->p_addr->u_pcb.pcb_savefpu.fp_fxsave, sizeof (struct fxsave64))))
+		struct fxsave64 *fx = &p->p_addr->u_pcb.pcb_savefpu.fp_fxsave;
+
+		if ((error = copyin(ksc.sc_fpstate, fx, sizeof(*fx))))
 			return (error);
+		fx->fx_mxcsr &= fpu_mxcsr_mask;
 		p->p_md.md_flags |= MDP_USEDFPU;
 	}
 
@@ -1000,6 +1000,7 @@ setregs(struct proc *p, struct exec_package *pack, u_long stack,
 	if (p->p_addr->u_pcb.pcb_fpcpu != NULL)
 		fpusave_proc(p, 0);
 	p->p_md.md_flags &= ~MDP_USEDFPU;
+	p->p_addr->u_pcb.pcb_fsbase = 0;
 
 	tf = p->p_md.md_regs;
 	tf->tf_ds = GSEL(GUDATA_SEL, SEL_UPL);
@@ -1180,8 +1181,6 @@ typedef void (vector)(void);
 extern vector IDTVEC(osyscall);
 extern vector *IDTVEC(exceptions)[];
 
-int bigmem = 0;
-
 void
 init_x86_64(paddr_t first_avail)
 {
@@ -1266,10 +1265,6 @@ init_x86_64(paddr_t first_avail)
 		avail_start = ACPI_TRAMPOLINE + PAGE_SIZE;
 #endif
 
-	/* Let us know if we're supporting > 4GB ram load */
-	if (bigmem)
-		printf("Bigmem = %d\n", bigmem);
-
 	/*
 	 * We need to go through the BIOS memory map given, and
 	 * fill out mem_clusters and mem_cluster_cnt stuff, taking
@@ -1307,18 +1302,6 @@ init_x86_64(paddr_t first_avail)
 			s1 = avail_start;
 			if (s1 > e1)
 				continue;
-		}
-
-		/* Crop to fit below 4GB for now */
-		if (!bigmem && (e1 >= (1UL<<32))) {
-			printf("Ignoring %dMB above 4GB\n", (e1-(1UL<<32))>>20);
-			e1 = (1UL << 32) - 1;
-			if (s1 > e1)
-				continue;
-		} else if (bigmem && (e1 >= (1UL<<32))) {
-			extern int amdgart_enable;
-
-			amdgart_enable = 1;
 		}
 
 		/* Crop stuff into "640K hole" */
@@ -1507,6 +1490,7 @@ init_x86_64(paddr_t first_avail)
 	cpu_init_idt();
 
 	intr_default_setup();
+	fpuinit(&cpu_info_primary);
 
 	softintr_init();
 	splraise(IPL_IPI);
@@ -1720,6 +1704,7 @@ getbootinfo(char *bootinfo, int bootinfo_size)
 {
 	bootarg32_t *q;
 	bios_ddb_t *bios_ddb;
+	bios_rootduid_t *bios_rootduid;
 
 #undef BOOTINFO_DEBUG
 #ifdef BOOTINFO_DEBUG
@@ -1804,6 +1789,11 @@ getbootinfo(char *bootinfo, int bootinfo_size)
 #ifdef DDB
 			db_console = bios_ddb->db_console;
 #endif
+			break;
+
+		case BOOTARG_ROOTDUID:
+			bios_rootduid = (bios_rootduid_t *)q->ba_arg;
+			bcopy(bios_rootduid, rootduid, sizeof(rootduid));
 			break;
 
 		default:

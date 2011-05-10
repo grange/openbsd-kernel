@@ -1,4 +1,4 @@
-/*	$OpenBSD: icmp6.c,v 1.113 2010/07/09 15:44:20 claudio Exp $	*/
+/*	$OpenBSD: icmp6.c,v 1.116 2011/04/06 19:23:15 sthen Exp $	*/
 /*	$KAME: icmp6.c,v 1.217 2001/06/20 15:03:29 jinmei Exp $	*/
 
 /*
@@ -742,7 +742,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 			bzero(p, 4);
 			bcopy(hostname, p + 4, maxhlen); /* meaningless TTL */
 			noff = sizeof(struct ip6_hdr);
-			if (m_dup_pkthdr(n, m)) { /* just for rcvif */
+			if (m_dup_pkthdr(n, m, M_DONTWAIT)) { /* for rcvif */
 				m_freem(n);
 				break;
 			}
@@ -1181,9 +1181,6 @@ icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
  * - joins NI group address at in6_ifattach() time only, does not cope
  *   with hostname changes by sethostname(3)
  */
-#ifndef offsetof		/* XXX */
-#define	offsetof(type, member)	((size_t)(&((type *)0)->member))
-#endif
 struct mbuf *
 ni6_input(struct mbuf *m, int off)
 {
@@ -1387,7 +1384,7 @@ ni6_input(struct mbuf *m, int off)
 		return (NULL);
 	}
 
-	if (m_dup_pkthdr(n, m)) /* just for rcvif */
+	if (m_dup_pkthdr(n, m, M_DONTWAIT)) /* just for rcvif */
 		goto bad;
 
 	if (replylen > MHLEN) {
@@ -1769,7 +1766,7 @@ ni6_store_addrs(struct icmp6_nodeinfo *ni6, struct icmp6_nodeinfo *nni6,
 			if ((ifa6->ia6_flags & IN6_IFF_DEPRECATED) != 0 &&
 			    allow_deprecated == 0) {
 				/*
-				 * prefererred address should be put before
+				 * preferred address should be put before
 				 * deprecated addresses.
 				 */
 

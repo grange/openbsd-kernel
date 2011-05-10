@@ -1,4 +1,4 @@
-/*	$OpenBSD: disksubr.c,v 1.11 2009/08/17 23:27:57 dms Exp $	*/
+/*	$OpenBSD: disksubr.c,v 1.15 2011/04/16 03:21:15 krw Exp $	*/
 /*	$NetBSD: disksubr.c,v 1.21 1996/05/03 19:42:03 christos Exp $	*/
 
 /*
@@ -49,14 +49,11 @@ int	readdpmelabel(struct buf *, void (*)(struct buf *),
  * must be filled in before calling us.
  *
  * If dos partition table requested, attempt to load it and
- * find disklabel inside a DOS partition. Return buffer
- * for use in signalling errors if requested.
+ * find disklabel inside a DOS partition.
  *
  * We would like to check if each MBR has a valid DOSMBR_SIGNATURE, but
  * we cannot because it doesn't always exist. So.. we assume the
  * MBR is valid.
- *
- * Returns null on success and an error string on failure.
  */
 int
 readdisklabel(dev_t dev, void (*strat)(struct buf *),
@@ -96,6 +93,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -110,7 +108,8 @@ readdpmelabel(struct buf *bp, void (*strat)(struct buf *),
 	/* First check for a DPME (HFS) disklabel */
 	bp->b_blkno = 1;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp))
 		return (bp->b_error);
@@ -128,7 +127,8 @@ readdpmelabel(struct buf *bp, void (*strat)(struct buf *),
 
 		bp->b_blkno = 1+i;
 		bp->b_bcount = lp->d_secsize;
-		bp->b_flags = B_BUSY | B_READ | B_RAW;
+		CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+		SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 		(*strat)(bp);
 		if (biowait(bp))
 			return (bp->b_error);
@@ -176,7 +176,8 @@ readdpmelabel(struct buf *bp, void (*strat)(struct buf *),
 	/* next, dig out disk label */
 	bp->b_blkno = hfspartoff + LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp))
 		return (bp->b_error);
@@ -199,21 +200,23 @@ writedisklabel(dev_t dev, void (*strat)(struct buf *), struct disklabel *lp)
 	bp = geteblk((int)lp->d_secsize);
 	bp->b_dev = dev;
 
-	if (readdpmelabel(bp, strat, lp, &partoff, 1) != NULL &&
-	    readdoslabel(bp, strat, lp, &partoff, 1) != NULL)
+	if (readdpmelabel(bp, strat, lp, &partoff, 1) != 0 &&
+	    readdoslabel(bp, strat, lp, &partoff, 1) != 0)
 		goto done;
 
 	/* Read it in, slap the new label in, and write it back out */
 	bp->b_blkno = partoff + LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if ((error = biowait(bp)) != 0)
 		goto done;
 
 	dlp = (struct disklabel *)(bp->b_data + LABELOFFSET);
 	*dlp = *lp;
-	bp->b_flags = B_BUSY | B_WRITE | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_WRITE | B_RAW);
 	(*strat)(bp);
 	error = biowait(bp);
 
@@ -222,5 +225,6 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }

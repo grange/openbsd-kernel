@@ -1,4 +1,4 @@
-/*	$OpenBSD: endian.h,v 1.5 2006/02/27 23:35:59 miod Exp $ */
+/*	$OpenBSD: endian.h,v 1.7 2011/03/23 16:54:36 pirofti Exp $ */
 
 /*
  * Copyright (c) 2001-2002 Opsycon AB  (www.opsycon.se / www.opsycon.com)

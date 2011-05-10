@@ -1,4 +1,4 @@
-/*	$OpenBSD: linux_types.h,v 1.8 2005/05/19 18:27:28 mickey Exp $	*/
+/*	$OpenBSD: linux_types.h,v 1.10 2011/04/05 22:54:31 pirofti Exp $	*/
 /*	$NetBSD: linux_types.h,v 1.5 1996/05/20 01:59:28 fvdl Exp $	*/
 
 /*
@@ -32,8 +32,8 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _LINUX_TYPES_H
-#define _LINUX_TYPES_H
+#ifndef _LINUX_TYPES_H_
+#define _LINUX_TYPES_H_
 
 typedef struct {
 	long	val[2];
@@ -197,4 +197,9 @@ struct linux_stat64 {
 	unsigned long long lst_ino;
 };
 
-#endif /* !_LINUX_TYPES_H */
+struct l_timespec {
+	linux_time_t	tv_sec;
+	long		tv_nsec;
+};
+
+#endif /* !_LINUX_TYPES_H_ */

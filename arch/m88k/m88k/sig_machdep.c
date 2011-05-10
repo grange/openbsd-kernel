@@ -1,4 +1,4 @@
-/*	$OpenBSD: sig_machdep.c,v 1.10 2010/06/26 23:24:43 guenther Exp $	*/
+/*	$OpenBSD: sig_machdep.c,v 1.12 2011/04/18 21:44:55 guenther Exp $	*/
 /*
  * Copyright (c) 1998, 1999, 2000, 2001 Steve Murphree, Jr.
  * Copyright (c) 1996 Nivas Madhur

@@ -1,4 +1,4 @@
-/*	$OpenBSD: pci_machdep.c,v 1.40 2011/01/10 16:26:27 kettenis Exp $	*/
+/*	$OpenBSD: pci_machdep.c,v 1.43 2011/04/22 15:02:35 kettenis Exp $	*/
 /*	$NetBSD: pci_machdep.c,v 1.3 2003/05/07 21:33:58 fvdl Exp $	*/
 
 /*-
@@ -147,16 +147,10 @@ struct bus_dma_tag pci_bus_dma_tag = {
 	_bus_dmamem_mmap,
 };
 
-extern void amdgart_probe(struct pcibus_attach_args *);
-
 void
 pci_attach_hook(struct device *parent, struct device *self,
     struct pcibus_attach_args *pba)
 {
-#ifndef SMALL_KERNEL
-	if (pba->pba_bus == 0)
-		amdgart_probe(pba);
-#endif /* !SMALL_KERNEL */
 }
 
 int
@@ -368,10 +362,8 @@ pci_intr_string(pci_chipset_tag_t pc, pci_intr_handle_t ih)
 
 #if NIOAPIC > 0
 	if (ih.line & APIC_INT_VIA_APIC)
-		snprintf(irqstr, sizeof(irqstr), "apic %d int %d (irq %d)",
-		    APIC_IRQ_APIC(ih.line),
-		    APIC_IRQ_PIN(ih.line),
-		    pci_intr_line(pc, ih));
+		snprintf(irqstr, sizeof(irqstr), "apic %d int %d",
+		    APIC_IRQ_APIC(ih.line), APIC_IRQ_PIN(ih.line));
 	else
 		snprintf(irqstr, sizeof(irqstr), "irq %d",
 		    pci_intr_line(pc, ih));
@@ -450,7 +442,13 @@ pci_init_extents(void)
 	}
 
 	if (pcimem_ex == NULL) {
-		pcimem_ex = extent_create("pcimem", 0, 0xffffffff, M_DEVBUF,
+		/*
+		 * Cover the 36-bit address space addressable by PAE
+		 * here.  As long as vendors continue to support
+		 * 32-bit operating systems, we should never see BARs
+		 * outside that region.
+		 */
+		pcimem_ex = extent_create("pcimem", 0, 0xfffffffff, M_DEVBUF,
 		    NULL, 0, EX_NOWAIT);
 		if (pcimem_ex == NULL)
 			return;

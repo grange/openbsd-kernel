@@ -1,4 +1,4 @@
-/*	$OpenBSD: ofdev.c,v 1.16 2010/05/14 19:32:39 drahn Exp $	*/
+/*	$OpenBSD: ofdev.c,v 1.18 2011/04/10 09:58:19 miod Exp $	*/
 /*	$NetBSD: ofdev.c,v 1.1 1997/04/16 20:29:20 thorpej Exp $	*/
 
 /*
@@ -35,6 +35,7 @@
  * Device I/O routines using Open Firmware
  */
 #include <sys/param.h>
+#include <lib/libkern/libkern.h>
 #include <sys/disklabel.h>
 #include <netinet/in.h>
 
@@ -70,7 +71,7 @@ filename(char *str)
 }
 
 static int
-strategy(void *devdata, int rw, daddr_t blk, size_t size, void *buf,
+strategy(void *devdata, int rw, daddr32_t blk, size_t size, void *buf,
     size_t *rsize)
 {
 	struct of_dev *dev = devdata;

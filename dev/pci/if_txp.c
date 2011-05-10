@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_txp.c,v 1.102 2010/09/20 07:40:38 deraadt Exp $	*/
+/*	$OpenBSD: if_txp.c,v 1.104 2011/04/05 18:01:21 henning Exp $	*/
 
 /*
  * Copyright (c) 2001
@@ -151,7 +151,7 @@ int
 txp_probe(struct device *parent, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, txp_devices,
-	    sizeof(txp_devices)/sizeof(txp_devices[0])));
+	    nitems(txp_devices)));
 }
 
 void
@@ -1378,11 +1378,11 @@ txp_start(struct ifnet *ifp)
 		if (m->m_pkthdr.csum_flags & M_IPV4_CSUM_OUT)
 			txd->tx_pflags |= TX_PFLAGS_IPCKSUM;
 #ifdef TRY_TX_TCP_CSUM
-		if (m->m_pkthdr.csum_flags & M_TCPV4_CSUM_OUT)
+		if (m->m_pkthdr.csum_flags & M_TCP_CSUM_OUT)
 			txd->tx_pflags |= TX_PFLAGS_TCPCKSUM;
 #endif
 #ifdef TRY_TX_UDP_CSUM
-		if (m->m_pkthdr.csum_flags & M_UDPV4_CSUM_OUT)
+		if (m->m_pkthdr.csum_flags & M_UDP_CSUM_OUT)
 			txd->tx_pflags |= TX_PFLAGS_UDPCKSUM;
 #endif
 

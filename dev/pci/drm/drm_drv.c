@@ -179,7 +179,7 @@ drm_attach(struct device *parent, struct device *self, void *aux)
 	 * conflict with it.
 	 */
 	dev->handle_ext = extent_create("drmext", 1024*1024*1024, LONG_MAX,
-	    M_DRM, NULL, NULL, EX_NOWAIT | EX_NOCOALESCE);
+	    M_DRM, NULL, 0, EX_NOWAIT | EX_NOCOALESCE);
 	if (dev->handle_ext == NULL) {
 		DRM_ERROR("Failed to initialise handle extent\n");
 		goto error;
@@ -219,6 +219,7 @@ drm_attach(struct device *parent, struct device *self, void *aux)
 
 error:
 	drm_lastclose(dev);
+	dev->dev_private = NULL;
 }
 
 int
@@ -387,7 +388,7 @@ drmopen(dev_t kdev, int flags, int fmt, struct proc *p)
 	int			 ret = 0;
 
 	dev = drm_get_device_from_kdev(kdev);
-	if (dev == NULL)
+	if (dev == NULL || dev->dev_private == NULL)
 		return (ENXIO);
 
 	DRM_DEBUG("open_count = %d\n", dev->open_count);

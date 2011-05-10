@@ -1,4 +1,4 @@
-/*	$OpenBSD: endian.h,v 1.3 2005/12/13 00:35:22 millert Exp $	*/
+/*	$OpenBSD: endian.h,v 1.5 2011/03/12 22:27:48 guenther Exp $	*/
 
 /*-
  * Copyright (c) 1997 Niklas Hallqvist.  All rights reserved.
@@ -24,30 +24,29 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _I386_ENDIAN_H_
-#define _I386_ENDIAN_H_
+#ifndef _MACHINE_ENDIAN_H_
+#define _MACHINE_ENDIAN_H_
 
 #ifdef __GNUC__
 
-#define	__swap32md(x) ({						\
+#define	__swap32md(x) __statement({					\
 	u_int32_t __swap32md_x = (x);					\
 									\
-	__asm ("bswap %1" : "+r" (__swap32md_x));			\
+	__asm ("bswap %0" : "+r" (__swap32md_x));			\
 	__swap32md_x;							\
 })
 
-/* XXX - I'm sure there is a better way on this cpu. */
-#define	__swap64md(x) ({						\
+#define	__swap64md(x) __statement({					\
 	u_int64_t __swap64md_x = (x);					\
 									\
-	(u_int64_t)__swap32md(__swap64md_x >> 32) |			\
-	    (u_int64_t)__swap32md(__swap64md_x & 0xffffffff) << 32;	\
+	__asm ("bswapq %0" : "+r" (__swap64md_x));			\
+	__swap64md_x;							\
 })
 
-#define	__swap16md(x) ({						\
+#define	__swap16md(x) __statement({					\
 	u_int16_t __swap16md_x = (x);					\
 									\
-	__asm ("rorw $8, %w1" : "+r" (__swap16md_x));			\
+	__asm ("rorw $8, %w0" : "+r" (__swap16md_x));			\
 	__swap16md_x;							\
 })
 
@@ -59,4 +58,4 @@
 #define _BYTE_ORDER _LITTLE_ENDIAN
 #include <sys/endian.h>
 
-#endif /* _I386_ENDIAN_H_ */
+#endif /* _MACHINE_ENDIAN_H_ */

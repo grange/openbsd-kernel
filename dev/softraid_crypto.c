@@ -1,4 +1,4 @@
-/* $OpenBSD: softraid_crypto.c,v 1.62 2011/01/12 20:48:34 marco Exp $ */
+/* $OpenBSD: softraid_crypto.c,v 1.65 2011/04/06 03:14:51 marco Exp $ */
 /*
  * Copyright (c) 2007 Marco Peereboom <marco@peereboom.us>
  * Copyright (c) 2008 Hans-Joerg Hoexer <hshoexer@openbsd.org>
@@ -258,8 +258,7 @@ sr_crypto_getcryptop(struct sr_workunit *wu, int encrypt)
 	uio->uio_iovcnt = 1;
 	uio->uio_iov->iov_len = xs->datalen;
 	if (xs->flags & SCSI_DATA_OUT) {
-		uio->uio_iov->iov_base = malloc(xs->datalen, M_DEVBUF,
-		    M_NOWAIT);
+		uio->uio_iov->iov_base = dma_alloc(xs->datalen, PR_NOWAIT);
 		if (uio->uio_iov->iov_base == NULL)
 			goto unwind;
 		bcopy(xs->data, uio->uio_iov->iov_base, xs->datalen);
@@ -322,7 +321,7 @@ unwind:
 	if (uio && uio->uio_iov)
 		if ((wu->swu_xs->flags & SCSI_DATA_OUT) &&
 		    uio->uio_iov->iov_base)
-			free(uio->uio_iov->iov_base, M_DEVBUF);
+			dma_free(uio->uio_iov->iov_base, uio->uio_iov->iov_len);
 
 	s = splbio();
 	if (uio && uio->uio_iov)
@@ -346,7 +345,7 @@ sr_crypto_putcryptop(struct cryptop *crp)
 	    DEVNAME(wu->swu_dis->sd_sc), crp);
 
 	if ((wu->swu_xs->flags & SCSI_DATA_OUT) && uio->uio_iov->iov_base)
-		free(uio->uio_iov->iov_base, M_DEVBUF);
+		dma_free(uio->uio_iov->iov_base, uio->uio_iov->iov_len);
 	s = splbio();
 	pool_put(&sd->mds.mdd_crypto.sr_iovpl, uio->uio_iov);
 	pool_put(&sd->mds.mdd_crypto.sr_uiopl, uio);
@@ -835,12 +834,12 @@ sr_crypto_read_key_disk(struct sr_discipline *sd, dev_t dev)
 
 	/* Open device. */
 	if (bdevvp(dev, &vn)) {
-		printf("%s:, sr_create_key_disk: can't allocate vnode\n",
+		printf("%s:, sr_read_key_disk: can't allocate vnode\n",
 		    DEVNAME(sc));
 		goto done;
 	}
 	if (VOP_OPEN(vn, FREAD | FWRITE, NOCRED, curproc)) {
-		DNPRINTF(SR_D_META,"%s: sr_create_key_disk cannot open %s\n",
+		DNPRINTF(SR_D_META,"%s: sr_read_key_disk cannot open %s\n",
 		    DEVNAME(sc), devname);
 		vput(vn);
 		goto done;
@@ -851,7 +850,7 @@ sr_crypto_read_key_disk(struct sr_discipline *sd, dev_t dev)
 	part = DISKPART(dev);
 	if (VOP_IOCTL(vn, DIOCGDINFO, (caddr_t)&label, FREAD,
 	    NOCRED, curproc)) {
-		DNPRINTF(SR_D_META, "%s: sr_create_key_disk ioctl failed\n",
+		DNPRINTF(SR_D_META, "%s: sr_read_key_disk ioctl failed\n",
 		    DEVNAME(sc));
 		VOP_CLOSE(vn, FREAD | FWRITE, NOCRED, curproc);
 		vput(vn);
@@ -1345,8 +1344,6 @@ sr_crypto_finish_io(struct sr_workunit *wu)
 		sr_crypto_putcryptop(ccb->ccb_opaque);
 	}
 
-	/* do not change the order of these 2 functions */
-	sr_wu_put(wu);
 	sr_scsi_done(sd, xs);
 
 	if (sd->sd_sync && sd->sd_wu_pending == 0)

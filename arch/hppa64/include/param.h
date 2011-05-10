@@ -1,4 +1,4 @@
-/*	$OpenBSD: param.h,v 1.12 2010/07/01 04:20:38 jsing Exp $	*/
+/*	$OpenBSD: param.h,v 1.14 2011/05/03 21:00:23 kettenis Exp $	*/
 
 /* 
  * Copyright (c) 1988-1994, The University of Utah and
@@ -38,7 +38,7 @@
 
 /*
  * Round p (pointer or byte index) up to a correctly-aligned value for all
- * data types (int, long, ...).   The result is u_int and must be cast to
+ * data types (int, long, ...).   The result is u_long and must be cast to
  * any desired pointer type.
  */
 #define	ALIGNBYTES	7
@@ -62,7 +62,7 @@
 
 #define	MACHINE_STACK_GROWS_UP	1	/* stack grows to higher addresses */
 
-#define	USPACE		(4 * NBPG)	/* pages for user struct and kstack */
+#define	USPACE		(5 * NBPG)	/* pages for user struct and kstack */
 #define	USPACE_ALIGN	(0)		/* u-area alignment 0-none */
 
 #ifndef	MSGBUFSIZE

@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_ix.c,v 1.46 2010/11/10 15:23:25 claudio Exp $	*/
+/*	$OpenBSD: if_ix.c,v 1.51 2011/04/15 15:12:27 chl Exp $	*/
 
 /******************************************************************************
 
@@ -166,7 +166,7 @@ ixgbe_probe(struct device *parent, void *match, void *aux)
 	INIT_DEBUGOUT("ixgbe_probe: begin");
 
 	return (pci_matchbyid((struct pci_attach_args *)aux, ixgbe_devices,
-	    sizeof(ixgbe_devices)/sizeof(ixgbe_devices[0])));
+	    nitems(ixgbe_devices)));
 }
 
 /*********************************************************************
@@ -756,53 +756,48 @@ ixgbe_legacy_irq(void *arg)
 {
 	struct ix_softc	*sc = (struct ix_softc *)arg;
 	struct ifnet	*ifp = &sc->arpcom.ac_if;
-	uint32_t	 reg_eicr;
 	struct tx_ring	*txr = sc->tx_rings;
 	struct rx_ring	*rxr = sc->rx_rings;
 	struct ixgbe_hw	*hw = &sc->hw;
-	int		 claimed = 0, refill = 0;
+	uint32_t	 reg_eicr;
+	int		 refill = 0;
 
-	for (;;) {
-		reg_eicr = IXGBE_READ_REG(&sc->hw, IXGBE_EICR);
-		if (reg_eicr == 0)
-			break;
+	reg_eicr = IXGBE_READ_REG(&sc->hw, IXGBE_EICR);
+	if (reg_eicr == 0)
+		return (0);
 
-		claimed = 1;
-		refill = 0;
+	if (ifp->if_flags & IFF_RUNNING) {
+		ixgbe_rxeof(rxr, -1);
+		ixgbe_txeof(txr);
+		refill = 1;
+	}
 
-		if (ifp->if_flags & IFF_RUNNING) {
-			ixgbe_rxeof(rxr, -1);
-			ixgbe_txeof(txr);
-			refill = 1;
-		}
+	/* Check for fan failure */
+	if ((hw->phy.media_type == ixgbe_media_type_copper) &&
+	    (reg_eicr & IXGBE_EICR_GPI_SDP1)) {
+                printf("%s: \nCRITICAL: FAN FAILURE!! "
+		    "REPLACE IMMEDIATELY!!\n", ifp->if_xname);
+		IXGBE_WRITE_REG(&sc->hw, IXGBE_EIMS,
+		    IXGBE_EICR_GPI_SDP1);
+	}
 
-		/* Check for fan failure */
-		if ((hw->phy.media_type == ixgbe_media_type_copper) &&
-		    (reg_eicr & IXGBE_EICR_GPI_SDP1)) {
-	                printf("%s: \nCRITICAL: FAN FAILURE!! "
-			    "REPLACE IMMEDIATELY!!\n", ifp->if_xname);
-			IXGBE_WRITE_REG(&sc->hw, IXGBE_EIMS,
-			    IXGBE_EICR_GPI_SDP1);
-		}
+	/* Link status change */
+	if (reg_eicr & IXGBE_EICR_LSC) {
+		timeout_del(&sc->timer);
+	        ixgbe_update_link_status(sc);
+		timeout_add_sec(&sc->timer, 1);
+	}
 
-		/* Link status change */
-		if (reg_eicr & IXGBE_EICR_LSC) {
-			timeout_del(&sc->timer);
-		        ixgbe_update_link_status(sc);
-			timeout_add_sec(&sc->timer, 1);
-		}
-
-		if (refill && ixgbe_rxfill(rxr)) {
-			/* Advance the Rx Queue "Tail Pointer" */
-			IXGBE_WRITE_REG(&sc->hw, IXGBE_RDT(rxr->me),
-			    rxr->last_rx_desc_filled);
-		}
+	if (refill && ixgbe_rxfill(rxr)) {
+		/* Advance the Rx Queue "Tail Pointer" */
+		IXGBE_WRITE_REG(&sc->hw, IXGBE_RDT(rxr->me),
+		    rxr->last_rx_desc_filled);
 	}
 
 	if (ifp->if_flags & IFF_RUNNING && !IFQ_IS_EMPTY(&ifp->if_snd))
 		ixgbe_start_locked(txr, ifp);
 
-	return (claimed);
+	return (1);
 }
 
 /*********************************************************************
@@ -868,7 +863,7 @@ ixgbe_encap(struct tx_ring *txr, struct mbuf *m_head)
 	struct ix_softc *sc = txr->sc;
 	uint32_t	olinfo_status = 0, cmd_type_len = 0;
 	int             i, j, error;
-	int		first, last = 0;
+	int		first;
 	bus_dmamap_t	map;
 	struct ixgbe_tx_buf *txbuf, *txbuf_mapped;
 	union ixgbe_adv_tx_desc *txd = NULL;
@@ -959,7 +954,6 @@ ixgbe_encap(struct tx_ring *txr, struct mbuf *m_head)
 		txd->read.cmd_type_len = htole32(txr->txd_cmd |
 		    cmd_type_len | map->dm_segs[j].ds_len);
 		txd->read.olinfo_status = htole32(olinfo_status);
-		last = i; /* Next descriptor that will get completed */
 
 		if (++i == sc->num_tx_desc)
 			i = 0;
@@ -1375,9 +1369,9 @@ ixgbe_free_pci_resources(struct ix_softc * sc)
 	if (sc->tag[0])
 		pci_intr_disestablish(pa->pa_pc, sc->tag[0]);
 	sc->tag[0] = NULL;
-	if (os->os_membase != NULL)
+	if (os->os_membase != 0)
 		bus_space_unmap(os->os_memt, os->os_memh, os->os_memsize);
-	os->os_membase = NULL;
+	os->os_membase = 0;
 
 	return;
 }
@@ -1592,7 +1586,6 @@ ixgbe_allocate_queues(struct ix_softc *sc)
 		error = ENOMEM;
 		goto fail;
 	}
-	txr = sc->tx_rings;
 
 	/* Next allocate the RX */
 	if (!(sc->rx_rings =
@@ -1602,7 +1595,6 @@ ixgbe_allocate_queues(struct ix_softc *sc)
 		error = ENOMEM;
 		goto rx_fail;
 	}
-	rxr = sc->rx_rings;
 
 	/* For the ring itself */
 	tsize = roundup2(sc->num_tx_desc *
@@ -2046,11 +2038,11 @@ ixgbe_tx_ctx_setup(struct tx_ring *txr, struct mbuf *mp)
 
 		switch (ipproto) {
 		case IPPROTO_TCP:
-			if (mp->m_pkthdr.csum_flags & M_TCPV4_CSUM_OUT)
+			if (mp->m_pkthdr.csum_flags & M_TCP_CSUM_OUT)
 				type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_TCP;
 			break;
 		case IPPROTO_UDP:
-			if (mp->m_pkthdr.csum_flags & M_UDPV4_CSUM_OUT)
+			if (mp->m_pkthdr.csum_flags & M_UDP_CSUM_OUT)
 				type_tucmd_mlhl |= IXGBE_ADVTXD_TUCMD_L4T_UDP;
 			break;
 		}

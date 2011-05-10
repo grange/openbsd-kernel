@@ -1,4 +1,4 @@
-/*	$OpenBSD: vector.S,v 1.27 2010/12/21 14:56:23 claudio Exp $	*/
+/*	$OpenBSD: vector.S,v 1.30 2011/04/19 06:07:03 dlg Exp $	*/
 /*	$NetBSD: vector.S,v 1.5 2004/06/28 09:13:11 fvdl Exp $	*/
 
 /*
@@ -295,7 +295,7 @@ calltrap:
  *
  * The direct costs of setting up a trap frame are two pushq's (error code and
  * trap number), an addl to get rid of these, and pushing and popping the
- * callee-saved registers %esi, %edi, %ebx, and %ebp twice.
+ * callee-saved registers %ebx, %ebp, and %r1[2-5] twice.
  *
  * If the interrupt frame is made more flexible,  INTR can push %eax first and
  * decide the ipending case with less overhead, e.g., by avoiding loading the
@@ -482,9 +482,13 @@ IDTVEC(intr_##name##num)						;\
 	movq	%rsp, %rdi						;\
 8:	movl	%r12d,CPUVAR(ILEVEL)					;\
 	call	*IH_FUN(%rbx)		/* call it */			;\
-	orq	%rax,%rax		/* should it be counted? */	;\
-	jz	4f							;\
-	incq	IH_COUNT(%rbx)						;\
+	orl	%eax,%eax		/* should it be counted? */	;\
+	jz	4f			/* no, skip it */		;\
+	incq	IH_COUNT(%rbx)		/* count the intrs */		;\
+	cmpl	$0,_C_LABEL(intr_shared_edge)				;\
+	jne	4f			/* if no shared edges ... */	;\
+	orl	%eax,%eax		/* 1 means stop trying */	;\
+	jns	5f							;\
 4:	movq	IH_NEXT(%rbx),%rbx	/* next handler in chain */	;\
 	testq	%rbx,%rbx						;\
 	jnz	6b							;\

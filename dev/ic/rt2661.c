@@ -1,4 +1,4 @@
-/*	$OpenBSD: rt2661.c,v 1.63 2010/09/07 16:21:42 deraadt Exp $	*/
+/*	$OpenBSD: rt2661.c,v 1.65 2011/03/18 06:05:21 deraadt Exp $	*/
 
 /*-
  * Copyright (c) 2006
@@ -396,8 +396,10 @@ rt2661_suspend(void *xsc)
 	struct rt2661_softc *sc = xsc;
 	struct ifnet *ifp = &sc->sc_ic.ic_if;
 
-	if (ifp->if_flags & IFF_RUNNING)
+	if (ifp->if_flags & IFF_RUNNING) {
 		rt2661_stop(ifp, 1);
+		sc->sc_flags &= ~RT2661_FWLOADED;
+	}
 }
 
 void
@@ -1004,19 +1006,19 @@ rt2661_tx_dma_intr(struct rt2661_softc *sc, struct rt2661_tx_ring *txq)
 		    !(letoh32(desc->flags) & RT2661_TX_VALID))
 			break;
 
-		bus_dmamap_sync(sc->sc_dmat, data->map, 0,
-		    data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
-		bus_dmamap_unload(sc->sc_dmat, data->map);
-		m_freem(data->m);
-		data->m = NULL;
-		/* node reference is released in rt2661_tx_intr() */
-
 		/* descriptor is no longer valid */
 		desc->flags &= ~htole32(RT2661_TX_VALID);
 
 		bus_dmamap_sync(sc->sc_dmat, txq->map,
 		    txq->next * RT2661_TX_DESC_SIZE, RT2661_TX_DESC_SIZE,
 		    BUS_DMASYNC_PREWRITE);
+
+		bus_dmamap_sync(sc->sc_dmat, data->map, 0,
+		    data->map->dm_mapsize, BUS_DMASYNC_POSTWRITE);
+		bus_dmamap_unload(sc->sc_dmat, data->map);
+		m_freem(data->m);
+		data->m = NULL;
+		/* node reference is released in rt2661_tx_intr() */
 
 		DPRINTFN(15, ("tx dma done q=%p idx=%u\n", txq, txq->next));
 
@@ -2464,11 +2466,14 @@ rt2661_init(struct ifnet *ifp)
 
 	rt2661_stop(ifp, 0);
 
-	if (rt2661_load_microcode(sc) != 0) {
-		printf("%s: could not load 8051 microcode\n",
-		    sc->sc_dev.dv_xname);
-		rt2661_stop(ifp, 1);
-		return EIO;
+	if (!(sc->sc_flags & RT2661_FWLOADED)) {
+		if (rt2661_load_microcode(sc) != 0) {
+			printf("%s: could not load 8051 microcode\n",
+			    sc->sc_dev.dv_xname);
+			rt2661_stop(ifp, 1);
+			return EIO;
+		}
+		sc->sc_flags |= RT2661_FWLOADED;
 	}
 
 	/* initialize Tx rings */
@@ -2631,7 +2636,7 @@ rt2661_stop(struct ifnet *ifp, int disable)
 	if (disable && sc->sc_disable != NULL) {
 		if (sc->sc_flags & RT2661_ENABLED) {
 			(*sc->sc_disable)(sc);
-			sc->sc_flags &= ~RT2661_ENABLED;
+			sc->sc_flags &= ~(RT2661_ENABLED | RT2661_FWLOADED);
 		}
 	}
 }

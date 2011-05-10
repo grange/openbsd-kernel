@@ -1,4 +1,4 @@
-/* $OpenBSD: ipifuncs.c,v 1.6 2010/08/30 08:52:10 syuu Exp $ */
+/* $OpenBSD: ipifuncs.c,v 1.8 2011/05/10 07:58:47 syuu Exp $ */
 /* $NetBSD: ipifuncs.c,v 1.40 2008/04/28 20:23:10 martin Exp $ */
 
 /*-

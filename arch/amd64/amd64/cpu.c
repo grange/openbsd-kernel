@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.40 2010/11/27 13:03:04 kettenis Exp $	*/
+/*	$OpenBSD: cpu.c,v 1.44 2011/04/13 02:49:12 guenther Exp $	*/
 /* $NetBSD: cpu.c,v 1.1 2003/04/26 18:39:26 fvdl Exp $ */
 
 /*-
@@ -85,7 +85,6 @@
 #include <machine/specialreg.h>
 #include <machine/segments.h>
 #include <machine/gdt.h>
-#include <machine/mtrr.h>
 #include <machine/pio.h>
 
 #if NLAPIC > 0
@@ -658,6 +657,7 @@ cpu_init_msrs(struct cpu_info *ci)
 	wrmsr(MSR_CSTAR, (uint64_t)Xsyscall32);
 	wrmsr(MSR_SFMASK, PSL_NT|PSL_T|PSL_I|PSL_C);
 
+	ci->ci_cur_fsbase = 0;
 	wrmsr(MSR_FSBASE, 0);
 	wrmsr(MSR_GSBASE, (u_int64_t)ci);
 	wrmsr(MSR_KERNELGSBASE, 0);

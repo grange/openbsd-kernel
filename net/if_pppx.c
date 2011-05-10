@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_pppx.c,v 1.3 2010/11/24 00:56:08 sthen Exp $ */
+/*	$OpenBSD: if_pppx.c,v 1.7 2011/04/14 05:13:45 dlg Exp $ */
 
 /*
  * Copyright (c) 2010 Claudio Jeker <claudio@openbsd.org>
@@ -45,7 +45,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/buf.h>
-#include <sys/kernel.h>  
+#include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/device.h>
 #include <sys/proc.h>
@@ -130,7 +130,7 @@ struct pppx_dev {
 	LIST_HEAD(,pppx_if)	pxd_pxis;
 };
 
-struct rwlock			pppx_devs_lk = RWLOCK_INITIALIZER("pppxdevs"); 
+struct rwlock			pppx_devs_lk = RWLOCK_INITIALIZER("pppxdevs");
 LIST_HEAD(, pppx_dev)		pppx_devs = LIST_HEAD_INITIALIZER(&pppx_devs);
 struct pool			*pppx_if_pl;
 
@@ -166,6 +166,8 @@ int		pppx_add_session(struct pppx_dev *,
 		    struct pipex_session_req *);
 int		pppx_del_session(struct pppx_dev *,
 		    struct pipex_session_close_req *);
+int		pppx_set_session_descr(struct pppx_dev *,
+		    struct pipex_session_descr_req *);
 
 void		pppx_if_destroy(struct pppx_dev *, struct pppx_if *);
 void		pppx_if_start(struct ifnet *);
@@ -282,7 +284,7 @@ pppxread(dev_t dev, struct uio *uio, int ioflag)
 		IF_DEQUEUE(&pxd->pxd_svcq, m);
 		if (m != NULL)
 			break;
- 
+
 		if (ISSET(ioflag, IO_NDELAY)) {
 			splx(s);
 			return (EWOULDBLOCK);
@@ -432,6 +434,7 @@ pppxioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 		error = pppx_add_session(pxd,
 		    (struct pipex_session_req *)addr);
 		break;
+
 	case PIPEXDSESSION:
 		error = pppx_del_session(pxd,
 		    (struct pipex_session_close_req *)addr);
@@ -440,15 +443,21 @@ pppxioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 	case PIPEXCSESSION:
 		error = pipex_config_session(
 		    (struct pipex_session_config_req *)addr);
-                return (error);
+		break;
 
-        case PIPEXGSTAT:
-                error = pipex_get_stat((struct pipex_session_stat_req *)addr);
-                return (error);
+	case PIPEXGSTAT:
+		error = pipex_get_stat((struct pipex_session_stat_req *)addr);
+		break;
 
-        case PIPEXGCLOSED:
-                error = pipex_get_closed((struct pipex_session_list_req *)addr);
-                return (error);
+	case PIPEXGCLOSED:
+		error = pipex_get_closed((struct pipex_session_list_req *)addr);
+		break;
+
+	case PIPEXSIFDESCR:
+		error = pppx_set_session_descr(pxd,
+		    (struct pipex_session_descr_req *)addr);
+		break;
+
 	case FIONBIO:
 	case FIOASYNC:
 	case FIONREAD:
@@ -487,7 +496,7 @@ pppxpoll(dev_t dev, int events, struct proc *p)
 
 int
 pppxkqfilter(dev_t dev, struct knote *kn)
-{ 
+{
 	struct pppx_dev *pxd = pppx_dev2pxd(dev);
 	struct mutex *mtx;
 	struct klist *klist;
@@ -524,7 +533,7 @@ filt_pppx_rdetach(struct knote *kn)
 
 	if (ISSET(kn->kn_status, KN_DETACHED))
 		return;
- 
+
 	mtx_enter(&pxd->pxd_rsel_mtx);
 	SLIST_REMOVE(klist, kn, knote, kn_selnext);
 	mtx_leave(&pxd->pxd_rsel_mtx);
@@ -559,7 +568,7 @@ filt_pppx_wdetach(struct knote *kn)
 
 	if (ISSET(kn->kn_status, KN_DETACHED))
 		return;
- 
+
 	mtx_enter(&pxd->pxd_wsel_mtx);
 	SLIST_REMOVE(klist, kn, knote, kn_selnext);
 	mtx_leave(&pxd->pxd_wsel_mtx);
@@ -653,6 +662,8 @@ pppx_add_session(struct pppx_dev *pxd, struct pipex_session_req *req)
 	struct pipex_hash_head *chain;
 	struct ifnet *ifp;
 	int unit, s, error = 0;
+	struct in_ifaddr *ia;
+	struct sockaddr_in ifaddr;
 #ifdef PIPEX_PPPOE
 	struct ifnet *over_ifp = NULL;
 #endif
@@ -675,16 +686,23 @@ pppx_add_session(struct pppx_dev *pxd, struct pipex_session_req *req)
 #endif
 		switch (req->peer_address.ss_family) {
 		case AF_INET:
-#ifdef INET6
-		case AF_INET6:
-#endif
-			if (req->peer_address.ss_family !=
-			    req->local_address.ss_family)
+			if (req->peer_address.ss_len != sizeof(struct sockaddr_in))
 				return (EINVAL);
 			break;
+#ifdef INET6
+		case AF_INET6:
+			if (req->peer_address.ss_len != sizeof(struct sockaddr_in6))
+				return (EINVAL);
+			break;
+#endif
 		default:
 			return (EPROTONOSUPPORT);
 		}
+		if (req->peer_address.ss_family !=
+		    req->local_address.ss_family ||
+		    req->peer_address.ss_len !=
+		    req->local_address.ss_len)
+			return (EINVAL);
 		break;
 	default:
 		return (EPROTONOSUPPORT);
@@ -727,6 +745,12 @@ pppx_add_session(struct pppx_dev *pxd, struct pipex_session_req *req)
 	session->ip_address.sin_addr.s_addr &=
 	    session->ip_netmask.sin_addr.s_addr;
 
+	if (req->peer_address.ss_len > 0)
+		memcpy(&session->peer, &req->peer_address,
+		    MIN(req->peer_address.ss_len, sizeof(session->peer)));
+	if (req->local_address.ss_len > 0)
+		memcpy(&session->local, &req->local_address,
+		    MIN(req->local_address.ss_len, sizeof(session->local)));
 #ifdef PIPEX_PPPOE
 	if (req->pr_protocol == PIPEX_PROTO_PPPOE)
 		session->proto.pppoe.over_ifp = over_ifp;
@@ -802,7 +826,7 @@ pppx_add_session(struct pppx_dev *pxd, struct pipex_session_req *req)
 
 	snprintf(ifp->if_xname, sizeof(ifp->if_xname), "%s%d", "pppx", unit);
 	ifp->if_mtu = req->pr_peer_mru;	/* XXX */
-	ifp->if_flags = IFF_POINTOPOINT | IFF_MULTICAST;
+	ifp->if_flags = IFF_POINTOPOINT | IFF_MULTICAST | IFF_UP;
 	ifp->if_start = pppx_if_start;
 	ifp->if_output = pppx_if_output;
 	ifp->if_ioctl = pppx_if_ioctl;
@@ -842,6 +866,44 @@ pppx_add_session(struct pppx_dev *pxd, struct pipex_session_req *req)
 	if (RB_INSERT(pppx_ifs, &pppx_ifs, pxi) != NULL)
 		panic("pppx_ifs modified while lock was held");
 	LIST_INSERT_HEAD(&pxd->pxd_pxis, pxi, pxi_list);
+
+	/* XXX ipv6 support?  how does the caller indicate it wants ipv6
+	 * instead of ipv4?
+	 */
+	memset(&ifaddr, 0, sizeof(ifaddr));
+	ifaddr.sin_family = AF_INET;
+	ifaddr.sin_len = sizeof(ifaddr);
+	ifaddr.sin_addr = req->pr_ip_srcaddr;
+
+	ia = malloc(sizeof (*ia), M_IFADDR, M_WAITOK | M_ZERO);
+	TAILQ_INSERT_TAIL(&in_ifaddr, ia, ia_list);
+
+	ia->ia_addr.sin_family = AF_INET;
+	ia->ia_addr.sin_len = sizeof(struct sockaddr_in);
+	ia->ia_addr.sin_addr = req->pr_ip_srcaddr;
+
+	ia->ia_dstaddr.sin_family = AF_INET;
+	ia->ia_dstaddr.sin_len = sizeof(struct sockaddr_in);
+	ia->ia_dstaddr.sin_addr = req->pr_ip_address;
+
+	ia->ia_sockmask.sin_family = AF_INET;
+	ia->ia_sockmask.sin_len = sizeof(struct sockaddr_in);
+	ia->ia_sockmask.sin_addr = req->pr_ip_netmask;
+
+	ia->ia_ifa.ifa_addr = sintosa(&ia->ia_addr);
+	ia->ia_ifa.ifa_dstaddr = sintosa(&ia->ia_dstaddr);
+	ia->ia_ifa.ifa_netmask = sintosa(&ia->ia_sockmask);
+	ia->ia_ifa.ifa_ifp = ifp;
+	
+	ia->ia_netmask = ia->ia_sockmask.sin_addr.s_addr;
+
+	error = in_ifinit(ifp, ia, &ifaddr, 0, 1);
+	if (error) {
+		printf("pppx: unable to set addresses for %s, error=%d\n",
+		    ifp->if_xname, error);
+	} else {
+		dohooks(ifp->if_addrhooks, 0);
+	}
 	splx(s);
 
 out:
@@ -862,6 +924,22 @@ pppx_del_session(struct pppx_dev *pxd, struct pipex_session_close_req *req)
 	req->pcr_stat = pxi->pxi_session.stat;
 
 	pppx_if_destroy(pxd, pxi);
+	return (0);
+}
+
+int
+pppx_set_session_descr(struct pppx_dev *pxd,
+    struct pipex_session_descr_req *req)
+{
+	struct pppx_if *pxi;
+
+	pxi = pppx_if_find(pxd, req->pdr_session_id, req->pdr_protocol);
+	if (pxi == NULL)
+		return (EINVAL);
+
+	(void)memset(pxi->pxi_if.if_description, 0, IFDESCRSIZE);
+	strlcpy(pxi->pxi_if.if_description, req->pdr_descr, IFDESCRSIZE);
+
 	return (0);
 }
 

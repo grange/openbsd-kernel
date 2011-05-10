@@ -1,4 +1,4 @@
-/*	$OpenBSD: intr.h,v 1.21 2010/12/27 19:51:27 guenther Exp $	*/
+/*	$OpenBSD: intr.h,v 1.23 2011/04/16 00:40:58 deraadt Exp $	*/
 /*	$NetBSD: intr.h,v 1.2 2003/05/04 22:01:56 fvdl Exp $	*/
 
 /*-
@@ -30,8 +30,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _X86_INTR_H_
-#define _X86_INTR_H_
+#ifndef _MACHINE_INTR_H_
+#define _MACHINE_INTR_H_
 
 #include <machine/intrdefs.h>
 
@@ -191,6 +191,8 @@ extern struct intrstub ioapic_level_stubs[];
 
 struct cpu_info;
 
+extern int intr_shared_edge;
+
 extern char idt_allocmap[];
 
 void intr_default_setup(void);
@@ -270,4 +272,4 @@ do {									\
 } while (/*CONSTCOND*/ 0)
 #endif /* _LOCORE */
 
-#endif /* !_X86_INTR_H_ */
+#endif /* !_MACHINE_INTR_H_ */

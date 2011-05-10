@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcb.h,v 1.14 2007/10/03 07:51:26 kettenis Exp $	*/
+/*	$OpenBSD: pcb.h,v 1.16 2011/03/23 16:54:35 pirofti Exp $	*/
 /*	$NetBSD: pcb.h,v 1.21 1996/01/08 13:51:42 mycroft Exp $	*/
 
 /*-
@@ -40,8 +40,8 @@
  * Intel 386 process control block
  */
 
-#ifndef _I386_PCB_H_
-#define _I386_PCB_H_
+#ifndef _MACHINE_PCB_H_
+#define _MACHINE_PCB_H_
 
 #include <sys/signal.h>
 
@@ -59,13 +59,13 @@ struct pcb {
 #define	pcb_ebp	pcb_tss.tss_ebp
 #define	pcb_cs	pcb_tss.tss_cs
 #define	pcb_ldt_sel	pcb_tss.tss_ldt
-	int	pcb_tss_sel;
 	union	descriptor *pcb_ldt;	/* per process (user) LDT */
 	int	pcb_ldt_len;		/*      number of LDT entries */
-	int	pcb_cr0;		/* saved image of CR0 */
-	int	pcb_pad[2];		/* savefpu on 16-byte boundary */
 	union	savefpu pcb_savefpu;	/* floating point state for FPU */
+	int	pcb_cr0;		/* saved image of CR0 */
 	struct	emcsts pcb_saveemc;	/* Cyrix EMC state */
+	struct	segment_descriptor pcb_threadsegs[2];
+					/* per-thread descriptors */
 /*
  * Software pcb (extension)
  */
@@ -81,6 +81,10 @@ struct pcb {
 #define PCB_SAVECTX	0x00000001
 };
 
+/* the indexes of the %fs/%gs segments in pcb_threadsegs */
+#define	TSEG_FS		0
+#define	TSEG_GS		1
+
 /*    
  * The pcb is augmented with machine-dependent additional data for 
  * core dumps. For the i386, there is nothing to add.
@@ -89,4 +93,4 @@ struct md_coredump {
 	long	md_pad[8];
 };    
 
-#endif /* _I386_PCB_H_ */
+#endif /* _MACHINE_PCB_H_ */

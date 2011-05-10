@@ -1,4 +1,4 @@
-/*      $OpenBSD: wdcvar.h,v 1.46 2010/08/29 18:40:33 deraadt Exp $     */
+/*      $OpenBSD: wdcvar.h,v 1.51 2011/05/09 22:33:54 matthew Exp $     */
 /*	$NetBSD: wdcvar.h,v 1.17 1999/04/11 20:50:29 bouyer Exp $	*/
 
 /*-
@@ -81,6 +81,8 @@ struct channel_softc { /* Per channel data */
 	 */
 	struct channel_queue *ch_queue;
 	struct timeout ch_timo;
+
+	int dying;
 };
 
 /*
@@ -155,9 +157,6 @@ struct wdc_softc { /* Per controller state */
 #define WDC_CAPABILITY_MODE   0x0004	/* controller knows its PIO/DMA modes */
 #define WDC_CAPABILITY_DMA    0x0008	/* DMA */
 #define WDC_CAPABILITY_UDMA   0x0010	/* Ultra-DMA/33 */
-#define WDC_CAPABILITY_HWLOCK 0x0020	/* Needs to lock HW */
-#define WDC_CAPABILITY_ATA_NOSTREAM 0x0040 /* Don't use stream funcs on ATA */
-#define WDC_CAPABILITY_ATAPI_NOSTREAM 0x0080 /* Don't use stream f on ATAPI */
 #define WDC_CAPABILITY_NO_EXTRA_RESETS 0x0100 /* only reset once */
 #define WDC_CAPABILITY_PREATA 0x0200	/* ctrl can be a pre-ata one */
 #define WDC_CAPABILITY_IRQACK 0x0400	/* callback to ack interrupt */
@@ -194,10 +193,6 @@ struct wdc_softc { /* Per controller state */
 #define WDC_DMAST_ERR	0x02 /* DMA error */
 #define WDC_DMAST_UNDER	0x04 /* DMA underrun */
 
-	/* if WDC_CAPABILITY_HWLOCK set in 'cap' */
-	int             (*claim_hw)(void *, int);
-	void            (*free_hw)(void *);
-
 	/* if WDC_CAPABILITY_MODE set in 'cap' */
 	void            (*set_modes)(struct channel_softc *);
 
@@ -226,6 +221,7 @@ struct wdc_xfer {
 #define C_SENSE		0x0080 /* cmd is a internal command */
 #define C_MEDIA_ACCESS	0x0100 /* is a media access command */
 #define C_POLL_MACHINE	0x0200 /* machine has a poll handler */
+#define C_PRIVATEXFER	0x0400 /* privately managed xfer */
 
 	/* Informations about our location */
 	struct channel_softc *chp;
@@ -263,6 +259,8 @@ int   wdcprobe(struct channel_softc *);
 void  wdcattach(struct channel_softc *);
 int   wdcdetach(struct channel_softc *, int);
 int   wdcintr(void *);
+struct channel_queue *wdc_alloc_queue(void);
+void  wdc_free_queue(struct channel_queue *);
 void  wdc_exec_xfer(struct channel_softc *, struct wdc_xfer *);
 struct wdc_xfer *wdc_get_xfer(int); /* int = WDC_NOSLEEP/CANSLEEP */
 #define WDC_CANSLEEP	0x00
@@ -270,8 +268,9 @@ struct wdc_xfer *wdc_get_xfer(int); /* int = WDC_NOSLEEP/CANSLEEP */
 void   wdc_free_xfer(struct channel_softc *, struct wdc_xfer *);
 void  wdcstart(struct channel_softc *);
 int   wdcreset(struct channel_softc *, int);
-#define VERBOSE	1
-#define SILENT	0 /* wdcreset will not print errors */
+#define NOWAIT  0x02
+#define VERBOSE	0x01
+#define SILENT	0x00 /* wdcreset will not print errors */
 int   wdc_wait_for_status(struct channel_softc *, int, int, int);
 int   wdc_dmawait(struct channel_softc *, struct wdc_xfer *, int);
 void  wdcbit_bucket(struct channel_softc *, int);

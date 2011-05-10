@@ -1,4 +1,4 @@
-/*	$OpenBSD: hifn7751.c,v 1.164 2011/01/12 20:55:22 deraadt Exp $	*/
+/*	$OpenBSD: hifn7751.c,v 1.166 2011/04/05 11:48:28 blambert Exp $	*/
 
 /*
  * Invertex AEON / Hifn 7751 driver
@@ -135,7 +135,7 @@ int
 hifn_probe(struct device *parent, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, hifn_devices,
-	    sizeof(hifn_devices)/sizeof(hifn_devices[0])));
+	    nitems(hifn_devices)));
 }
 
 void 
@@ -610,7 +610,7 @@ hifn_enable_crypto(struct hifn_softc *sc, pcireg_t pciid)
 	u_int32_t dmacfg, ramcfg, encl, addr, i;
 	char *offtbl = NULL;
 
-	for (i = 0; i < sizeof(pci2id)/sizeof(pci2id[0]); i++) {
+	for (i = 0; i < nitems(pci2id); i++) {
 		if (pci2id[i].pci_vendor == PCI_VENDOR(pciid) &&
 		    pci2id[i].pci_prod == PCI_PRODUCT(pciid)) {
 			offtbl = pci2id[i].card_id;
@@ -1430,7 +1430,8 @@ hifn_crypto(struct hifn_softc *sc, struct hifn_command *cmd,
 				goto err_srcmap;
 			}
 			if (len == MHLEN) {
-				err = m_dup_pkthdr(m0, cmd->srcu.src_m);
+				err = m_dup_pkthdr(m0, cmd->srcu.src_m,
+				    M_DONTWAIT);
 				if (err) {
 					m_free(m0);
 					goto err_srcmap;
@@ -2739,7 +2740,7 @@ hifn_mkmbuf_chain(int totlen, struct mbuf *mtemplate)
 	if (m0 == NULL)
 		return (NULL);
 	if (len == MHLEN) {
-		if (m_dup_pkthdr(m0, mtemplate)) {
+		if (m_dup_pkthdr(m0, mtemplate, M_DONTWAIT)) {
 			m_free(m0);
 			return (NULL);
 		}

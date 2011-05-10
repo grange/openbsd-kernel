@@ -1,7 +1,9 @@
-/*	$OpenBSD: installboot.c,v 1.12 2009/05/30 23:13:14 deraadt Exp $	*/
+/*	$OpenBSD: installboot.c,v 1.19 2011/04/24 22:44:22 krw Exp $	*/
 /*	$NetBSD: installboot.c,v 1.5 1995/11/17 23:23:50 gwr Exp $ */
 
 /*
+ * Copyright (c) 2011 Joel Sing <jsing@openbsd.org>
+ * Copyright (c) 2010 Otto Moerbeek <otto@openbsd.org>
  * Copyright (c) 2003 Tom Cosgrove <tom.cosgrove@arches-consulting.com>
  * Copyright (c) 1997 Michael Shalayeff
  * Copyright (c) 1994 Paul Kranenburg
@@ -47,6 +49,9 @@
 #include <ufs/ffs/fs.h>
 #include <sys/reboot.h>
 
+#include <dev/biovar.h>
+#include <dev/softraidvar.h>
+
 #include <uvm/uvm_extern.h>
 #include <sys/sysctl.h>
 
@@ -76,6 +81,8 @@ struct	sym_data {
 extern	char *__progname;
 int	verbose, nowrite = 0;
 char	*boot, *proto, *dev, *realdev;
+char	*protostore;
+long	protosize;
 struct sym_data pbr_symbols[] = {
 	{"_fs_bsize_p",	2},
 	{"_fs_bsize_s",	2},
@@ -92,13 +99,20 @@ struct sym_data pbr_symbols[] = {
 
 #define INODEOFF  ((INODESEG-BOOTSEG) << 4)
 
+#define SR_FS_BLOCKSIZE	(16 * 1024)
+
 static char	*loadproto(char *, long *);
 static int	getbootparams(char *, int, struct disklabel *);
-static void	devread(int, void *, daddr_t, size_t, char *);
+static void	devread(int, void *, daddr64_t, size_t, char *);
 static void	sym_set_value(struct sym_data *, char *, u_int32_t);
 static void	pbr_set_symbols(char *, char *, struct sym_data *);
 static void	usage(void);
-static long	findopenbsd(int, struct disklabel *, off_t, int *);
+static u_int	findopenbsd(int, struct disklabel *);
+static void	write_bootblocks(int devfd, struct disklabel *);
+
+static int	sr_volume(int, int *, int *);
+static void	sr_installboot(int);
+static void	sr_installpbr(int, int, int);
 
 static void
 usage(void)
@@ -115,15 +129,10 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
+	int	vol = -1, ndisks = 0, disk;
 	int	c;
 	int	devfd;
-	char	*protostore;
-	long	protosize;
-	struct	stat sb;
 	struct	disklabel dl;
-	off_t	startoff = 0;
-	long	start = 0;
-	int	n = 8;
 
 	while ((c = getopt(argc, argv, "vn")) != -1) {
 		switch (c) {
@@ -147,7 +156,7 @@ main(int argc, char *argv[])
 	proto = argv[optind + 1];
 	realdev = dev = argv[optind + 2];
 
-	/* Open and check raw disk device. */
+	/* Open raw disk device. */
 	if ((devfd = opendev(dev, (nowrite? O_RDONLY:O_RDWR),
 	    OPENDEV_PART, &realdev)) < 0)
 		err(1, "open: %s", realdev);
@@ -155,17 +164,6 @@ main(int argc, char *argv[])
 	if (verbose)
 		fprintf(stderr, "boot: %s proto: %s device: %s\n",
 		    boot, proto, realdev);
-
-	if (ioctl(devfd, DIOCGDINFO, &dl) != 0)
-		err(1, "disklabel: %s", realdev);
-
-	/* Check disklabel. */
-	if (dl.d_magic != DISKMAGIC)
-		err(1, "bad disklabel magic=0x%08x", dl.d_magic);
-
-	/* Warn on unknown disklabel types. */
-	if (dl.d_type == 0)
-		warnx("disklabel type unknown");
 
 	/* Load proto blocks into core. */
 	if ((protostore = loadproto(proto, &protosize)) == NULL)
@@ -175,19 +173,56 @@ main(int argc, char *argv[])
 	if (protosize & (DEV_BSIZE - 1))
 		errx(1, "proto %s bad size=%ld", proto, protosize);
 
-	/* Write patched proto bootblock(s) into the superblock. */
 	if (protosize > SBSIZE - DEV_BSIZE)
 		errx(1, "proto bootblocks too big");
 
+	if (sr_volume(devfd, &vol, &ndisks)) {
+
+		/* Install boot loader into softraid volume. */
+		sr_installboot(devfd);
+
+		/* Install biosboot on each disk that is part of this volume. */
+		for (disk = 0; disk < ndisks; disk++)
+			sr_installpbr(devfd, vol, disk);
+
+	} else {
+
+		/* Get and check disklabel. */
+		if (ioctl(devfd, DIOCGDINFO, &dl) != 0)
+			err(1, "disklabel: %s", realdev);
+		if (dl.d_magic != DISKMAGIC)
+			err(1, "bad disklabel magic=0x%08x", dl.d_magic);
+
+		/* Warn on unknown disklabel types. */
+		if (dl.d_type == 0)
+			warnx("disklabel type unknown");
+
+		/* Get bootstrap parameters to patch into proto. */
+		if (getbootparams(boot, devfd, &dl) != 0)
+			exit(1);
+
+		/* Write boot blocks to device. */
+		write_bootblocks(devfd, &dl);
+
+	}
+
+	(void)close(devfd);
+
+	return 0;
+}
+
+void
+write_bootblocks(int devfd, struct disklabel *dl)
+{
+	struct stat	sb;
+	u_int		start = 0;
+
+	/* Write patched proto bootblock(s) into the superblock. */
 	if (fstat(devfd, &sb) < 0)
 		err(1, "stat: %s", realdev);
 
 	if (!S_ISCHR(sb.st_mode))
 		errx(1, "%s: not a character device", realdev);
-
-	/* Get bootstrap parameters that are to be patched into proto. */
-	if (getbootparams(boot, devfd, &dl) != 0)
-		exit(1);
 
 	/* Patch the parameters into the proto bootstrap sector. */
 	pbr_set_symbols(proto, protostore, pbr_symbols);
@@ -197,71 +232,92 @@ main(int argc, char *argv[])
 		sync(); sleep(1);
 	}
 
-	if (dl.d_type != 0 && dl.d_type != DTYPE_FLOPPY &&
-	    dl.d_type != DTYPE_VND) {
+	if (dl->d_type != 0 && dl->d_type != DTYPE_FLOPPY &&
+	    dl->d_type != DTYPE_VND) {
 		/* Find OpenBSD partition. */
-		start = findopenbsd(devfd, &dl, (off_t)DOSBBSECTOR, &n);
-		if (start == -1)
+		start = findopenbsd(devfd, dl);
+		if (start == (u_int)-1)
  			errx(1, "no OpenBSD partition");
-		startoff = (off_t)start * dl.d_secsize;
 	}
 
+	if (start + (protosize / DEV_BSIZE) > BOOTBIOS_MAXSEC)
+		errx(1, "invalid location: all of /boot must be < sector %u.",
+		    BOOTBIOS_MAXSEC);
+
+	if (verbose)
+		fprintf(stderr, "/boot will be written at sector %u\n", start);
+
 	if (!nowrite) {
-		if (lseek(devfd, startoff, SEEK_SET) < 0 ||
+		if (lseek(devfd, (off_t)start * dl->d_secsize, SEEK_SET) < 0 ||
 		    write(devfd, protostore, protosize) != protosize)
 			err(1, "write bootstrap");
 	}
-
-	(void)close(devfd);
-
-	return 0;
 }
 
-long
-findopenbsd(int devfd, struct disklabel *dl, off_t mbroff, int *n)
+u_int
+findopenbsd(int devfd, struct disklabel *dl)
 {
 	struct		dos_mbr mbr;
+	u_int		mbroff = DOSBBSECTOR;
+	u_int		mbr_eoff = DOSBBSECTOR; /* Offset of extended part. */
 	struct		dos_partition *dp;
-	off_t		startoff;
-	long		start;
+	int		i, maxebr = DOS_MAXEBR, nextebr;
 
-	/* Limit the number of recursions */
-	if (!(*n)--)
-		return (-1);
+again:
+	if (!maxebr--) {
+		if (verbose)
+			fprintf(stderr, "Traversed more than %d Extended Boot "
+			    "Records (EBRs)\n",
+			    DOS_MAXEBR);
+		return ((u_int)-1);
+	}
+		
+	if (verbose)
+		fprintf(stderr, "%s boot record (%cBR) at sector %u\n",
+		    (mbroff == DOSBBSECTOR) ? "master" : "extended",
+		    (mbroff == DOSBBSECTOR) ? 'M' : 'E', mbroff);
 
-	if (lseek(devfd, mbroff * dl->d_secsize, SEEK_SET) < 0 ||
+	if (lseek(devfd, (off_t)mbroff * dl->d_secsize, SEEK_SET) < 0 ||
 	    read(devfd, &mbr, sizeof(mbr)) != sizeof(mbr))
-		err(4, "can't read master boot record");
+		err(4, "can't read boot record");
 
 	if (mbr.dmbr_sign != DOSMBR_SIGNATURE)
-		errx(1, "broken MBR");
+		errx(1, "invalid boot record signature (0x%04X) @ sector %u",
+		    mbr.dmbr_sign, mbroff);
 
-	for (dp = mbr.dmbr_parts; dp < &mbr.dmbr_parts[NDOSPART];
-	    dp++) {
+	nextebr = 0;
+	for (i = 0; i < NDOSPART; i++) {
+		dp = &mbr.dmbr_parts[i];
 		if (!dp->dp_size)
 			continue;
+
+		if (verbose)
+			fprintf(stderr,
+			    "\tpartition %d: type 0x%02X offset %u size %u\n",
+			    i, dp->dp_typ, dp->dp_start, dp->dp_size);
+
 		if (dp->dp_typ == DOSPTYP_OPENBSD) {
-			if (verbose)
-				fprintf(stderr,
-				    "using MBR partition %ld: type 0x%02X offset %d\n",
-				    (long)(dp - mbr.dmbr_parts),
-				    dp->dp_typ, dp->dp_start);
+			if (dp->dp_start > (dp->dp_start + mbroff))
+				continue;
 			return (dp->dp_start + mbroff);
-		} else if (dp->dp_typ == DOSPTYP_EXTEND ||
-		    dp->dp_typ == DOSPTYP_EXTENDL) {
-			if (verbose)
-				fprintf(stderr,
-				    "extended partition %ld: type 0x%02X offset %d\n",
-				    (long)(dp - mbr.dmbr_parts),
-				    dp->dp_typ, dp->dp_start);
-			startoff = (off_t)dp->dp_start + mbroff;
-			start = findopenbsd(devfd, dl, startoff, n);
-			if (start != -1)
-				return (start);
+		}
+
+		if (!nextebr && (dp->dp_typ == DOSPTYP_EXTEND ||
+		    dp->dp_typ == DOSPTYP_EXTENDL)) {
+			nextebr = dp->dp_start + mbr_eoff;
+			if (nextebr < dp->dp_start)
+				nextebr = (u_int)-1;
+			if (mbr_eoff == DOSBBSECTOR)
+				mbr_eoff = dp->dp_start;
 		}
 	}
 
-	return (-1);
+	if (nextebr && nextebr != (u_int)-1) {
+		mbroff = nextebr;
+		goto again;
+	}
+
+	return ((u_int)-1);
 }
 
 /*
@@ -334,7 +390,7 @@ loadproto(char *fname, long *size)
 }
 
 static void
-devread(int fd, void *buf, daddr_t blk, size_t size, char *msg)
+devread(int fd, void *buf, daddr64_t blk, size_t size, char *msg)
 {
 	if (lseek(fd, dbtob((off_t)blk), SEEK_SET) != dbtob((off_t)blk))
 		err(1, "%s: devread: lseek", msg);
@@ -358,7 +414,7 @@ getbootparams(char *boot, int devfd, struct disklabel *dl)
 	struct partition *pl;
 	struct fs	*fs;
 	char		*buf;
-	daddr_t		blk, *ap;
+	u_int		blk, *ap;
 	struct ufs1_dinode	*ip;
 	int		ndb;
 	int		mib[3];
@@ -488,9 +544,6 @@ sym_set_value(struct sym_data *sym_list, char *sym, u_int32_t value)
 	if (p->sym_name == NULL)
 		errx(1, "%s: no such symbol", sym);
 
-	if (p->sym_set)
-		errx(1, "%s already set", p->sym_name);
-
 	p->sym_value = value;
 	p->sym_set = 1;
 }
@@ -558,4 +611,200 @@ pbr_set_symbols(char *fname, char *proto, struct sym_data *sym_list)
 
 		free(nl);
 	}
+}
+
+int
+sr_volume(int devfd, int *vol, int *disks)
+{
+	struct	bioc_inq bi;
+	struct	bioc_vol bv;
+	int	rv, i;
+
+	/* Get volume information. */
+	memset(&bi, 0, sizeof(bi));
+	rv = ioctl(devfd, BIOCINQ, &bi);
+	if (rv == -1)
+		return 0;
+
+	/* XXX - softraid volumes will always have a "softraid0" controller. */
+	if (strncmp(bi.bi_dev, "softraid0", sizeof("softraid0")))
+		return 0;
+
+	/* Locate specific softraid volume. */
+	for (i = 0; i < bi.bi_novol; i++) {
+
+		memset(&bv, 0, sizeof(bv));
+		bv.bv_volid = i;
+		rv = ioctl(devfd, BIOCVOL, &bv);
+		if (rv == -1)
+			err(1, "BIOCVOL");
+
+		if (strncmp(dev, bv.bv_dev, sizeof(bv.bv_dev)) == 0) {
+			*vol = i;
+			*disks = bv.bv_nodisk;
+			break;
+		}
+
+	}
+
+	if (verbose)
+		fprintf(stderr, "%s: softraid volume with %i disk(s)\n",
+		    dev, *disks);
+
+	return 1;
+}
+
+void
+sr_installboot(int devfd)
+{
+	struct bioc_installboot bb;
+	struct stat sb;
+	struct ufs1_dinode *ino_p;
+	uint32_t bootsize, inodeblk, inodedbl;
+	uint16_t bsize = SR_FS_BLOCKSIZE;
+	uint16_t nblocks;
+	uint8_t bshift = 5;		/* fragsize == blocksize */
+	int fd, i, rv;
+	u_char *p;
+
+	/*
+	 * Install boot loader into softraid boot loader storage area.
+	 *
+	 * In order to allow us to reuse the existing biosboot we construct
+	 * a fake FFS filesystem with a single inode, which points to the
+	 * boot loader.
+	 */
+
+	nblocks = howmany(SR_BOOT_LOADER_SIZE, SR_FS_BLOCKSIZE / DEV_BSIZE);
+	inodeblk = nblocks - 1;
+	bootsize = nblocks * SR_FS_BLOCKSIZE;
+
+	p = malloc(bootsize);
+	if (p == NULL)
+		err(1, NULL);
+	
+	memset(p, 0, bootsize);
+	fd = open(boot, O_RDONLY, 0);
+	if (fd == -1)
+		err(1, NULL);
+
+	if (fstat(fd, &sb) == -1)
+		err(1, NULL);
+
+	nblocks = howmany(sb.st_blocks, SR_FS_BLOCKSIZE / DEV_BSIZE);
+	if (sb.st_blocks * S_BLKSIZE > bootsize - sizeof(struct ufs1_dinode))
+		errx(1, "boot code will not fit");
+
+	/* We only need to fill the direct block array. */
+	ino_p = (struct ufs1_dinode *)&p[bootsize - sizeof(struct ufs1_dinode)];
+
+	ino_p->di_mode = sb.st_mode;
+	ino_p->di_nlink = 1;
+	ino_p->di_inumber = 0xfeebfaab;
+	ino_p->di_size = read(fd, p, sb.st_blocks * S_BLKSIZE);
+	ino_p->di_blocks = nblocks;
+	for (i = 0; i < nblocks; i++)
+		ino_p->di_db[i] = i;
+
+	inodedbl = ((u_char*)&ino_p->di_db[0] -
+	    &p[bootsize - SR_FS_BLOCKSIZE]) + INODEOFF;
+
+	bb.bb_bootldr = p;
+	bb.bb_bootldr_size = bootsize;
+	bb.bb_bootblk = "XXX";
+	bb.bb_bootblk_size = sizeof("XXX");
+	strncpy(bb.bb_dev, dev, sizeof(bb.bb_dev));
+	if (!nowrite) {
+		if (verbose)
+			fprintf(stderr, "%s: installing boot loader on "
+			    "softraid volume\n", dev);
+		rv = ioctl(devfd, BIOCINSTALLBOOT, &bb);
+		if (rv != 0)
+			errx(1, "softraid installboot failed");
+	}
+
+	/*
+	 * Set the values that will need to go into biosboot
+	 * (the partition boot record, a.k.a. the PBR).
+	 */
+	sym_set_value(pbr_symbols, "_fs_bsize_p", (bsize / 16));
+	sym_set_value(pbr_symbols, "_fs_bsize_s", (bsize / 512));
+	sym_set_value(pbr_symbols, "_fsbtodb", bshift);
+	sym_set_value(pbr_symbols, "_inodeblk", inodeblk);
+	sym_set_value(pbr_symbols, "_inodedbl", inodedbl);
+	sym_set_value(pbr_symbols, "_nblocks", nblocks);
+
+	if (verbose)
+		fprintf(stderr, "%s is %d blocks x %d bytes\n",
+		    boot, nblocks, bsize);
+
+	close(fd);
+}
+
+void
+sr_installpbr(int devfd, int vol, int disk)
+{
+	struct bioc_disk bd;
+	struct disklabel dl;
+	struct partition *pp;
+	uint32_t poffset;
+	char *realdiskdev;
+	char part;
+	int diskfd;
+	int rv;
+
+	/* Get device name for this disk/chunk. */
+	memset(&bd, 0, sizeof(bd));
+	bd.bd_volid = vol;
+	bd.bd_diskid = disk;
+	rv = ioctl(devfd, BIOCDISK, &bd);
+	if (rv == -1)
+		err(1, "BIOCDISK");
+
+	/* Check disk status. */
+	if (bd.bd_status != BIOC_SDONLINE && bd.bd_status != BIOC_SDREBUILD) {
+		fprintf(stderr, "softraid disk %s not online - skipping...\n",
+		    bd.bd_vendor);
+		return;	
+	}
+
+	if (strlen(bd.bd_vendor) < 1)
+		errx(1, "invalid disk name %s", bd.bd_vendor);
+	part = bd.bd_vendor[strlen(bd.bd_vendor) - 1];
+	if (part < 'a' || part >= 'a' + MAXPARTITIONS)
+		errx(1, "invalid partition %c\n", part);
+	bd.bd_vendor[strlen(bd.bd_vendor) - 1] = '\0';
+
+	/* Open this device and check its disklabel. */
+	if ((diskfd = opendev(bd.bd_vendor, (nowrite? O_RDONLY:O_RDWR),
+	    OPENDEV_PART, &realdiskdev)) < 0)
+		err(1, "open: %s", realdiskdev);
+
+	/* Get and check disklabel. */
+	if (ioctl(diskfd, DIOCGDINFO, &dl) != 0)
+		err(1, "disklabel: %s", realdev);
+	if (dl.d_magic != DISKMAGIC)
+		err(1, "bad disklabel magic=0x%08x", dl.d_magic);
+
+	/* Warn on unknown disklabel types. */
+	if (dl.d_type == 0)
+		warnx("disklabel type unknown");
+
+	/* Determine poffset and set symbol value. */
+	pp = &dl.d_partitions[part - 'a'];
+	if (pp->p_offseth != 0)
+		errx(1, "partition offset too high");
+	poffset = pp->p_offset; 		/* Offset of RAID partition. */
+	poffset += SR_BOOT_LOADER_OFFSET;	/* SR boot loader area. */
+	sym_set_value(pbr_symbols, "_p_offset", poffset);
+
+	if (verbose)
+		fprintf(stderr, "%s%c: installing boot blocks on %s, "
+		    "part offset %u\n", bd.bd_vendor, part, realdiskdev,
+		    poffset);
+
+	/* Write boot blocks to device. */
+	write_bootblocks(diskfd, &dl);
+
+	close(diskfd);
 }

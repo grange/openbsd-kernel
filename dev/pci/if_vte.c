@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vte.c,v 1.2 2011/01/15 10:08:50 kevlo Exp $	*/
+/*	$OpenBSD: if_vte.c,v 1.4 2011/03/14 03:01:19 kevlo Exp $	*/
 /*-
  * Copyright (c) 2010, Pyun YongHyeon <yongari@FreeBSD.org>
  * All rights reserved.
@@ -1457,11 +1457,9 @@ vte_iff(struct vte_softc *sc)
 	}
 
 	mcr = CSR_READ_2(sc, VTE_MCR0);
+	/* Always accept broadcast frames so MCR0_BROADCAST bit must be 0 */
 	mcr &= ~(MCR0_PROMISC | MCR0_BROADCAST | MCR0_MULTICAST);
 	ifp->if_flags &= ~IFF_ALLMULTI;
-
-	/* Always accept broadcast frames. */
-	mcr |= MCR0_BROADCAST;
 
 	if (ifp->if_flags & IFF_PROMISC || ac->ac_multirangecnt > 0) {
 		ifp->if_flags |= IFF_ALLMULTI;
@@ -1470,7 +1468,6 @@ vte_iff(struct vte_softc *sc)
 		else
 			mcr |= MCR0_MULTICAST;
 		mchash[0] = mchash[1] = mchash[2] = mchash[3] = 0xFFFF;
-		goto chipit;
 	} else {
 		nperf = 0;
 		ETHER_FIRST_MULTI(step, ac, enm);
@@ -1495,12 +1492,11 @@ vte_iff(struct vte_softc *sc)
 			mchash[crc >> 30] |= 1 << ((crc >> 26) & 0x0F);
 			ETHER_NEXT_MULTI(step, enm);
 		}
+		if (mchash[0] != 0 || mchash[1] != 0 || mchash[2] != 0 ||
+		    mchash[3] != 0)
+			mcr |= MCR0_MULTICAST;
 	}
-	if (mchash[0] != 0 || mchash[1] != 0 || mchash[2] != 0 ||
-	    mchash[3] != 0)
-		mcr |= MCR0_MULTICAST;
 
-chipit:
 	/* Program multicast hash table. */
 	CSR_WRITE_2(sc, VTE_MAR0, mchash[0]);
 	CSR_WRITE_2(sc, VTE_MAR1, mchash[1]);

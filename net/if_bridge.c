@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_bridge.c,v 1.188 2010/11/04 23:07:15 weerd Exp $	*/
+/*	$OpenBSD: if_bridge.c,v 1.191 2011/04/10 20:09:21 claudio Exp $	*/
 
 /*
  * Copyright (c) 1999, 2000 Jason L. Wright (jason@thought.net)
@@ -1002,6 +1002,7 @@ bridge_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *sa,
 	struct ifnet *dst_if;
 	struct ether_addr *dst;
 	struct bridge_softc *sc;
+	struct arpcom *ac;
 	int s, error, len;
 #ifdef IPSEC
 	struct m_tag *mtag;
@@ -1065,13 +1066,33 @@ bridge_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *sa,
 		}
 #endif /* IPSEC */
 
-		/* Catch packets that need TCP/UDP/IP hardware checksumming */
+		/* Catch packets that need TCP/UDP hardware checksumming */
 		if (m->m_pkthdr.csum_flags & M_IPV4_CSUM_OUT ||
-		    m->m_pkthdr.csum_flags & M_TCPV4_CSUM_OUT ||
-		    m->m_pkthdr.csum_flags & M_UDPV4_CSUM_OUT) {
+		    m->m_pkthdr.csum_flags & M_TCP_CSUM_OUT ||
+		    m->m_pkthdr.csum_flags & M_UDP_CSUM_OUT) {
 			m_freem(m);
 			splx(s);
 			return (0);
+		}
+
+		/* check if packet is for local interface */
+		LIST_FOREACH(p, &sc->sc_iflist, next) {
+			if (p->ifp->if_type != IFT_ETHER)
+				continue;
+			ac = (struct arpcom *)p->ifp;
+			dst_if = p->ifp;
+			if (bcmp(ac->ac_enaddr, eh->ether_dhost,
+			    ETHER_ADDR_LEN) == 0
+#if NCARP > 0
+			    || (dst_if->if_carp &&
+			        carp_ourether(dst_if->if_carp, eh, 0) != NULL)
+#endif
+			    ) {
+				bridge_localbroadcast(sc, dst_if, eh, m);
+				m_freem(m);
+				splx(s);
+				return (0);
+			}
 		}
 
 		bridge_span(sc, NULL, m);
@@ -1136,6 +1157,10 @@ bridge_output(struct ifnet *ifp, struct mbuf *m, struct sockaddr *sa,
 				}
 				mc = m1;
 			}
+
+			/* bounce packets into alternate rdomains */
+			if (ifp->if_rdomain != dst_if->if_rdomain)
+				bridge_localbroadcast(sc, dst_if, eh, m);
 
 			error = bridge_ifenqueue(sc, dst_if, mc);
 			if (error)
@@ -1505,15 +1530,15 @@ bridge_input(struct ifnet *ifp, struct ether_header *eh, struct mbuf *m)
 			eh, 0) != NULL)
 #endif
 		    ) {
-			if (srcifl->bif_flags & IFBIF_LEARNING)
-				bridge_rtupdate(sc,
-				    (struct ether_addr *)&eh->ether_shost,
-				    ifp, 0, IFBAF_DYNAMIC);
 			if (bridge_filterrule(&srcifl->bif_brlin, eh, m) ==
 			    BRL_ACTION_BLOCK) {
 				m_freem(m);
 				return (NULL);
 			}
+			if (srcifl->bif_flags & IFBIF_LEARNING)
+				bridge_rtupdate(sc,
+				    (struct ether_addr *)&eh->ether_shost,
+				    ifp, 0, IFBAF_DYNAMIC);
 
 			/* Make sure the real incoming interface
 			 * is aware */

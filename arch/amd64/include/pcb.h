@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcb.h,v 1.7 2010/11/13 04:16:42 guenther Exp $	*/
+/*	$OpenBSD: pcb.h,v 1.11 2011/04/13 02:49:12 guenther Exp $	*/
 /*	$NetBSD: pcb.h,v 1.1 2003/04/26 18:39:45 fvdl Exp $	*/
 
 /*-
@@ -68,8 +68,8 @@
  * XXXfvdl these copyrights don't really match anymore
  */
 
-#ifndef _AMD64_PCB_H_
-#define _AMD64_PCB_H_
+#ifndef _MACHINE_PCB_H_
+#define _MACHINE_PCB_H_
 
 #include <sys/signal.h>
 
@@ -86,6 +86,7 @@ struct pcb {
 	u_int64_t	pcb_rsp;
 	u_int64_t	pcb_rbp;
 	u_int64_t	pcb_kstack;	/* kernel stack address */
+	u_int64_t	pcb_fsbase;	/* per-thread offset: %fs */
 	caddr_t	pcb_onfault;		/* copyin/out fault recovery */
 	struct	cpu_info *pcb_fpcpu;	/* cpu holding our fp state. */
 	struct	pmap *pcb_pmap;		/* back pointer to our pmap */
@@ -100,4 +101,4 @@ struct md_coredump {
 	long	md_pad[8];
 };    
 
-#endif /* _AMD64_PCB_H_ */
+#endif /* _MACHINE_PCB_H_ */

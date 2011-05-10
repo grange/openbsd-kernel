@@ -1,4 +1,4 @@
-/*	$OpenBSD: uticom.c,v 1.12 2010/12/17 21:02:58 jasper Exp $	*/
+/*	$OpenBSD: uticom.c,v 1.14 2011/04/05 20:42:43 jsg Exp $	*/
 /*
  * Copyright (c) 2005 Dmitry Komissaroff <dxi@mail.ru>.
  *
@@ -497,8 +497,6 @@ uticom_detach(struct device *self, int flags)
 		sc->sc_intr_pipe = NULL;
 	}
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-	    &sc->sc_dev);
 	return (0);
 }
 
@@ -974,7 +972,7 @@ uticom_download_fw(struct uticom_softc *sc, int pipeno,
 	memcpy(obuf, buffer, buffer_size);
 
 	usbd_setup_xfer(oxfer, pipe, (usbd_private_handle)sc, obuf, buffer_size,
-	    USBD_NO_COPY || USBD_SYNCHRONOUS, USBD_NO_TIMEOUT, 0);
+	    USBD_NO_COPY | USBD_SYNCHRONOUS, USBD_NO_TIMEOUT, 0);
 	err = usbd_sync_transfer(oxfer);
 
 	if (err != USBD_NORMAL_COMPLETION)

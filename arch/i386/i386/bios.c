@@ -1,4 +1,4 @@
-/*	$OpenBSD: bios.c,v 1.88 2010/11/22 21:08:07 miod Exp $	*/
+/*	$OpenBSD: bios.c,v 1.90 2011/04/26 17:33:17 jsing Exp $	*/
 
 /*
  * Copyright (c) 1997-2001 Michael Shalayeff
@@ -455,6 +455,7 @@ bios_getopt()
 {
 	bootarg_t *q;
 	bios_ddb_t *bios_ddb;
+	bios_rootduid_t *bios_rootduid;
 
 #ifdef BIOS_DEBUG
 	printf("bootargv:");
@@ -538,6 +539,12 @@ bios_getopt()
 #ifdef DDB
 			db_console = bios_ddb->db_console;
 #endif
+			break;
+
+		case BOOTARG_ROOTDUID:
+			bios_rootduid = (bios_rootduid_t *)q->ba_arg;
+			bcopy(bios_rootduid, rootduid, sizeof(rootduid));
+			break;
 
 		default:
 #ifdef BIOS_DEBUG
@@ -756,7 +763,7 @@ smbios_find_table(u_int8_t type, struct smbtable *st)
 			if (hdr->type == type) {
 				va = (u_int8_t *)hdr + hdr->size;
 				for (; va + 1 < end; va++)
-					if (*va == NULL && *(va + 1) == NULL)
+					if (*va == 0 && *(va + 1) == 0)
 						break;
 				va+= 2;
 				tcount = st->cookie >> 16;
@@ -777,7 +784,7 @@ smbios_find_table(u_int8_t type, struct smbtable *st)
 			break;
 		va+= hdr->size;
 		for (; va + 1 < end; va++)
-			if (*va == NULL && *(va + 1) == NULL)
+			if (*va == 0 && *(va + 1) == 0)
 				break;
 		va+=2;
 	}

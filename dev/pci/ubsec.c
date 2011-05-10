@@ -1,4 +1,4 @@
-/*	$OpenBSD: ubsec.c,v 1.150 2011/01/12 20:55:22 deraadt Exp $	*/
+/*	$OpenBSD: ubsec.c,v 1.153 2011/05/06 17:55:00 mikeb Exp $	*/
 
 /*
  * Copyright (c) 2000 Jason L. Wright (jason@thought.net)
@@ -146,7 +146,7 @@ int
 ubsec_probe(struct device *parent, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, ubsec_devices,
-	    sizeof(ubsec_devices)/sizeof(ubsec_devices[0])));
+	    nitems(ubsec_devices)));
 }
 
 void
@@ -379,10 +379,11 @@ ubsec_intr(void *arg)
 
 	stat = READ_REG(sc, BS_STAT);
 
-	stat &= sc->sc_statmask;
-	if (stat == 0)
+	if ((stat & (BS_STAT_MCR1_DONE|BS_STAT_MCR2_DONE|BS_STAT_MCR4_DONE|
+	    BS_STAT_DMAERR)) == 0)
 		return (0);
 
+	stat &= sc->sc_statmask;
 	WRITE_REG(sc, BS_STAT, stat);		/* IACK */
 
 	/*
@@ -1153,7 +1154,8 @@ ubsec_process(struct cryptop *crp)
 					goto errout;
 				}
 				if (len == MHLEN) {
-					err = m_dup_pkthdr(m, q->q_src_m);
+					err = m_dup_pkthdr(m, q->q_src_m,
+					    M_DONTWAIT);
 					if (err) {
 						m_freem(m);
 						goto errout;

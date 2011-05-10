@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.127 2010/12/26 15:41:00 miod Exp $	*/
+/*	$OpenBSD: machdep.c,v 1.131 2011/04/18 21:44:56 guenther Exp $	*/
 /*	$NetBSD: machdep.c,v 1.108 2001/07/24 19:30:14 eeh Exp $ */
 
 /*-
@@ -353,7 +353,7 @@ setregs(p, pack, stack, retval)
 	tf->tf_global[2] = tf->tf_global[7] = tf->tf_pc;
 	stack -= sizeof(struct rwindow);
 	tf->tf_out[6] = stack - STACK_OFFSET;
-	tf->tf_out[7] = NULL;
+	tf->tf_out[7] = 0;
 #ifdef NOTDEF_DEBUG
 	printf("setregs: setting tf %p sp %p pc %p\n", (long)tf, 
 	       (long)tf->tf_out[6], (long)tf->tf_pc);
@@ -1808,7 +1808,7 @@ sparc_bus_mmap(bus_space_tag_t t, bus_space_tag_t t0, bus_addr_t paddr,
 {
 	if (PHYS_ASI(t0->asi)) {
 		printf("\nsparc_bus_mmap: physical ASI");
-		return (NULL);
+		return (0);
 	}
 
 	/* Devices are un-cached... although the driver should do that */
@@ -1883,15 +1883,7 @@ sparc_bus_barrier(bus_space_tag_t t, bus_space_tag_t t0, bus_space_handle_t h,
 	 * with loads, or stores with stores.  The only ones that seem
 	 * generic are #Sync and #MemIssue.  I'll use #Sync for safety.
 	 */
-	if (flags == (BUS_SPACE_BARRIER_READ|BUS_SPACE_BARRIER_WRITE))
-		membar(Sync);
-	else if (flags == BUS_SPACE_BARRIER_READ)
-		membar(Sync);
-	else if (flags == BUS_SPACE_BARRIER_WRITE)
-		membar(Sync);
-	else
-		printf("sparc_bus_barrier: unknown flags\n");
-	return;
+	membar(Sync);
 }
 
 int

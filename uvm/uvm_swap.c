@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_swap.c,v 1.100 2010/12/21 20:14:44 thib Exp $	*/
+/*	$OpenBSD: uvm_swap.c,v 1.102 2011/04/17 19:19:47 deraadt Exp $	*/
 /*	$NetBSD: uvm_swap.c,v 1.40 2000/11/17 11:39:39 mrg Exp $	*/
 
 /*
@@ -58,6 +58,8 @@
 #endif
 
 #include <miscfs/specfs/specdev.h>
+
+#include "vnd.h"
 
 /*
  * uvm_swap.c: manage configuration and i/o to swap space.
@@ -911,6 +913,12 @@ swap_on(struct proc *p, struct swapdev *sdp)
 
 	vp = sdp->swd_vp;
 	dev = sdp->swd_dev;
+
+#if NVND > 0 
+	/* no swapping to vnds. */
+	if (bdevsw[major(dev)].d_strategy == vndstrategy)
+		return (EOPNOTSUPP);
+#endif
 
 	/*
 	 * open the swap file (mostly useful for block device files to
@@ -2087,6 +2095,7 @@ swapmount(void)
 	struct swappri *spp;
 	struct vnode *vp;
 	dev_t swap_dev = swdevt[0].sw_dev;
+	char *nam;
 
 	/*
 	 * No locking here since we happen to know that we will just be called
@@ -2109,11 +2118,24 @@ swapmount(void)
 	sdp->swd_flags = SWF_FAKE;
 	sdp->swd_dev = swap_dev;
 	sdp->swd_vp = vp;
-	swaplist_insert(sdp, spp, 0);
-	sdp->swd_pathlen = strlen("swap_device") + 1;
+
+	/* Construct a potential path to swap */
+	sdp->swd_pathlen = MNAMELEN + 1;
 	sdp->swd_path = malloc(sdp->swd_pathlen, M_VMSWAP, M_WAITOK);
-	if (copystr("swap_device", sdp->swd_path, sdp->swd_pathlen, 0))
-		panic("swapmount: copystr");
+#if defined(NFSCLIENT)
+	if (swap_dev == NETDEV)
+		snprintf(sdp->swd_path, sdp->swd_pathlen, "/swap");
+	else
+#endif
+	if ((nam = findblkname(major(swap_dev))))
+		snprintf(sdp->swd_path, sdp->swd_pathlen, "/dev/%s%d%c", nam,
+		    DISKUNIT(swap_dev), 'a' + DISKPART(swap_dev));
+	else
+		snprintf(sdp->swd_path, sdp->swd_pathlen, "blkdev0x%x",
+		    swap_dev);
+	sdp->swd_pathlen = strlen(sdp->swd_path) + 1;
+
+	swaplist_insert(sdp, spp, 0);
 
 	if (swap_on(curproc, sdp)) {
 		swaplist_find(vp, 1);

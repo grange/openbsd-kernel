@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_run.c,v 1.83 2011/01/10 16:59:05 damien Exp $	*/
+/*	$OpenBSD: if_run.c,v 1.88 2011/02/10 17:26:40 jakemsr Exp $	*/
 
 /*-
  * Copyright (c) 2008-2010 Damien Bergamini <damien.bergamini@free.fr>
@@ -142,6 +142,7 @@ static const struct usb_devno run_devs[] = {
 	USB_ID(CONCEPTRONIC2,	RT2870_8),
 	USB_ID(CONCEPTRONIC2,	RT3070_1),
 	USB_ID(CONCEPTRONIC2,	RT3070_2),
+	USB_ID(CONCEPTRONIC2,	RT3070_3),
 	USB_ID(CONCEPTRONIC2,	VIGORN61),
 	USB_ID(COREGA,		CGWLUSB300GNM),
 	USB_ID(COREGA,		RT2870_1),
@@ -582,8 +583,6 @@ run_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_txtap.wt_ihdr.it_len = htole16(sc->sc_txtap_len);
 	sc->sc_txtap.wt_ihdr.it_present = htole32(RUN_TX_RADIOTAP_PRESENT);
 #endif
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, &sc->sc_dev);
 }
 
 int
@@ -601,21 +600,7 @@ run_detach(struct device *self, int flags)
 		timeout_del(&sc->calib_to);
 
 	/* wait for all queued asynchronous commands to complete */
-#if 0
-	while (sc->cmdq.queued > 0)
-		tsleep(&sc->cmdq, 0, "cmdq", 0);
-#endif
-	/* the async commands are run in a task */
 	usb_rem_wait_task(sc->sc_udev, &sc->sc_task);
-
-	/* but the task might not have run if it did not start before
-	 * usbd_deactivate() was called, so wakeup now.  we're
-	 * detaching, no need to try to run more commands.
-	 */
-	if (sc->cmdq.queued > 0) {
-		sc->cmdq.queued = 0;
-		wakeup(&sc->cmdq);
-	}
 
 	usbd_ref_wait(sc->sc_udev);
 
@@ -630,8 +615,6 @@ run_detach(struct device *self, int flags)
 	run_free_rx_ring(sc);
 
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev, &sc->sc_dev);
 
 	return 0;
 }
@@ -1488,7 +1471,6 @@ run_task(void *arg)
 		ring->queued--;
 		ring->next = (ring->next + 1) % RUN_HOST_CMD_RING_COUNT;
 	}
-	wakeup(ring);
 	splx(s);
 }
 
@@ -3537,8 +3519,7 @@ run_stop(struct ifnet *ifp, int disable)
 	s = splusb();
 	ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
 	/* wait for all queued asynchronous commands to complete */
-	while (sc->cmdq.queued > 0)
-		tsleep(&sc->cmdq, 0, "cmdq", 0);
+	usb_wait_task(sc->sc_udev, &sc->sc_task);
 	splx(s);
 
 	/* disable Tx/Rx */

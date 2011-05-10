@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtsock.c,v 1.113 2011/01/06 14:50:11 claudio Exp $	*/
+/*	$OpenBSD: rtsock.c,v 1.118 2011/04/07 15:30:16 miod Exp $	*/
 /*	$NetBSD: rtsock.c,v 1.18 1996/03/29 00:32:10 cgd Exp $	*/
 
 /*
@@ -309,6 +309,8 @@ rt_senddesync(void *data)
 			rop->flags &= ~ROUTECB_FLAG_DESYNC;
 			sorwakeup(rp->rcb_socket);
 		} else {
+			if (desync_mbuf)
+				m_freem(desync_mbuf);
 			/* Re-add timeout to try sending msg again */
 			timeout_add(&rop->timeout, ROUTE_DESYNC_RESEND_TIMEOUT);
 		}
@@ -401,7 +403,8 @@ route_input(struct mbuf *m0, ...)
 		if (last) {
 			struct mbuf *n;
 			if ((n = m_copy(m, 0, (int)M_COPYALL)) != NULL) {
-				if (sbappendaddr(&last->so_rcv, sosrc,
+				if (sbspace(&last->so_rcv) < (2 * MSIZE) ||
+				    sbappendaddr(&last->so_rcv, sosrc,
 				    n, (struct mbuf *)0) == 0) {
 					/*
 					 * Flag socket as desync'ed and 
@@ -421,7 +424,8 @@ route_input(struct mbuf *m0, ...)
 		last = rp->rcb_socket;
 	}
 	if (last) {
-		if (sbappendaddr(&last->so_rcv, sosrc,
+		if (sbspace(&last->so_rcv) < (2 * MSIZE) ||
+		    sbappendaddr(&last->so_rcv, sosrc,
 		    m, (struct mbuf *)0) == 0) {
 			/* Flag socket as desync'ed and flush required */
 			sotoroutecb(last)->flags |= 
@@ -529,7 +533,7 @@ route_output(struct mbuf *m, ...)
 	tableid = rtm->rtm_tableid;
 	if (!rtable_exists(tableid)) {
 		if (rtm->rtm_type == RTM_ADD) {
-			if ((error = rtable_add(tableid)) != NULL)
+			if ((error = rtable_add(tableid)) != 0)
 				goto flush;
 		} else {
 			error = EINVAL;
@@ -896,8 +900,7 @@ fail:
 	if (rp)
 		rp->rcb_proto.sp_family = 0; /* Avoid us */
 	if (rtm) {
-		m_copyback(m, 0, rtm->rtm_msglen, rtm, M_NOWAIT);
-		if (m->m_pkthdr.len < rtm->rtm_msglen) {
+		if (m_copyback(m, 0, rtm->rtm_msglen, rtm, M_NOWAIT)) {
 			m_freem(m);
 			m = NULL;
 		} else if (m->m_pkthdr.len > rtm->rtm_msglen)
@@ -996,12 +999,11 @@ rt_msg1(int type, struct rt_addrinfo *rtinfo)
 			continue;
 		rtinfo->rti_addrs |= (1 << i);
 		dlen = ROUNDUP(sa->sa_len);
-		m_copyback(m, len, dlen, sa, M_NOWAIT);
+		if (m_copyback(m, len, dlen, sa, M_NOWAIT)) {
+			m_freem(m);
+			return (NULL);
+		}
 		len += dlen;
-	}
-	if (m->m_pkthdr.len != len) {
-		m_freem(m);
-		return (NULL);
 	}
 	rtm->rtm_msglen = len;
 	rtm->rtm_hdrlen = hlen;
@@ -1467,4 +1469,4 @@ struct protosw routesw[] = {
 
 struct domain routedomain =
     { PF_ROUTE, "route", route_init, 0, 0,
-      routesw, &routesw[sizeof(routesw)/sizeof(routesw[0])] };
+      routesw, &routesw[nitems(routesw)] };

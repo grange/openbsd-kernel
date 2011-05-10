@@ -1,4 +1,4 @@
-define(_rcsid,``$OpenBSD: bcopy.m4,v 1.4 2007/11/24 19:42:01 deraadt Exp $'')dnl
+define(_rcsid,``$OpenBSD: bcopy.m4,v 1.6 2011/04/14 13:52:29 jsing Exp $'')dnl
 dnl
 dnl
 dnl  This is the source file for bcopy.S, spcopy.S
@@ -123,11 +123,11 @@ define(`E', `e')dnl
 ifelse($7,`-', `', `0',`0',
 `	comib,>=,n 15, $6, L($1, byte)
 
-	extru	$3, 31, 2, %r20
-	extru	$5, 31, 2, %r19
+	extrd	$3, 63, 2, %r20
+	extrd	$5, 63, 2, %r19
 	add	$6, %r19, $6
 	comb,<> %r20, %r19, L($1, unaligned)
-	dep	%r0, 31, 2, $3
+	depd	%r0, 63, 2, $3
 	hppa_blcopy($1, $2, $3, $4, $5, $6, `a')
 
 	STWL($1, $2, $3, $4, $5, $6, `a')dnl
@@ -223,10 +223,10 @@ LEAF_ENTRY(spcopy)
 	std	%rp, HPPA_FRAME_RP(%sp)
 	ldo	HPPA_FRAME_SIZE(%sp), %sp
 	/* setup fault handler */
-	mfctl	%cr24, %arg1
-	ldd	CI_CURPROC(%arg1), %r1
+	mfctl	%cr24, %r1
+	ldd	CI_CURPROC(%r1), %r1
 	ldil	L%copy_on_fault, %r21
-	ldd	P_ADDR(%r20), %r2
+	ldd	P_ADDR(%r1), %r2
 	ldo	R%copy_on_fault(%r21), %r21
 	ldd	PCB_ONFAULT+U_PCB(%r2), %r1
 	std	%r21, PCB_ONFAULT+U_PCB(%r2)

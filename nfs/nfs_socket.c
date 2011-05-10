@@ -1,4 +1,4 @@
-/*	$OpenBSD: nfs_socket.c,v 1.98 2010/07/05 16:32:07 deraadt Exp $	*/
+/*	$OpenBSD: nfs_socket.c,v 1.100 2011/04/18 21:44:56 guenther Exp $	*/
 /*	$NetBSD: nfs_socket.c,v 1.27 1996/04/15 20:20:00 thorpej Exp $	*/
 
 /*

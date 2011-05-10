@@ -1,4 +1,4 @@
-/*	$OpenBSD: utwitch.c,v 1.2 2010/12/19 21:32:58 jasper Exp $ */
+/*	$OpenBSD: utwitch.c,v 1.4 2011/03/02 07:15:45 jasper Exp $ */
 
 /*
  * Copyright (c) 2010 Yojiro UO <yuo@nui.org>
@@ -154,8 +154,6 @@ utwitch_attach(struct device *parent, struct device *self, void *aux)
 	}
 	sc->sc_ibuf = malloc(sc->sc_ilen, M_USBDEV, M_WAITOK);
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev,
-	    &sc->sc_hdev.sc_dev);
 	printf("\n");
 
 
@@ -208,9 +206,6 @@ utwitch_detach(struct device *self, int flags)
 		sc->sc_ibuf = NULL;
 	}
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-	    &sc->sc_hdev.sc_dev);
-
 	return (rv);
 }
 
@@ -250,7 +245,7 @@ utwitch_intr(struct uhidev *addr, void *ibuf, u_int len)
 	switch (buf[0]) {
 	case CMD_ACK:
 		if (buf[1] == sc->issueing_cmd) {
-			DPRINTF(("ack recieved for cmd 0x%.2x\n", buf[1]));
+			DPRINTF(("ack received for cmd 0x%.2x\n", buf[1]));
 			sc->accepted_cmd = buf[1];
 		} else {
 			DPRINTF(("cmd-ack mismatch: recved 0x%.2x, expect 0x%.2x\n",

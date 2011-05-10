@@ -1,4 +1,4 @@
-/*	$OpenBSD: xbow.h,v 1.10 2009/11/25 11:23:30 miod Exp $	*/
+/*	$OpenBSD: xbow.h,v 1.12 2011/04/17 17:44:24 miod Exp $	*/
 
 /*
  * Copyright (c) 2008 Miodrag Vallat.
@@ -45,8 +45,6 @@ extern	paddr_t (*xbow_widget_base)(int16_t, u_int);
 extern	paddr_t	(*xbow_widget_map)(int16_t, u_int, bus_addr_t *, bus_size_t *);
 
 extern	int	(*xbow_widget_id)(int16_t, u_int, uint32_t *);
-extern	int	xbow_intr_widget;
-extern	paddr_t	xbow_intr_widget_register;
 
 extern	int	(*xbow_intr_widget_intr_register)(int, int, int *);
 extern	int	(*xbow_intr_widget_intr_establish)(int (*)(void *), void *,
@@ -62,6 +60,9 @@ extern	void	(*xbow_intr_widget_intr_clear)(int);
 
 #define	WIDGET_MIN			8
 #define	WIDGET_MAX			15
+
+/* interrupt register address on the master hub */
+extern	uint64_t xbow_intr_address;
 
 struct xbow_attach_args {
 	int16_t		xaa_nasid;

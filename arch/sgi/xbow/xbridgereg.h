@@ -1,4 +1,4 @@
-/*	$OpenBSD: xbridgereg.h,v 1.11 2009/12/26 20:16:19 miod Exp $	*/
+/*	$OpenBSD: xbridgereg.h,v 1.13 2011/04/05 01:17:41 miod Exp $	*/
 
 /*
  * Copyright (c) 2008, 2009 Miodrag Vallat.
@@ -60,7 +60,7 @@
 
 #define	BRIDGE_DIRMAP_WIDGET_SHIFT	20
 #define	BRIDGE_DIRMAP_ADD_512MB		0x00020000	/* add 512MB */
-#define	BRIDGE_DIRMAP_BASE_MASK		0x00001fff
+#define	BRIDGE_DIRMAP_BASE_MASK		0x0001ffff
 #define	BRIDGE_DIRMAP_BASE_SHIFT	31
 
 #define	BRIDGE_PCI0_MEM_SPACE_BASE	0x0000000040000000ULL
@@ -214,6 +214,10 @@
 
 #define	BRIDGE_DEVICE(d)		(0x00000200 + 8 * (d))
 /* flags applying to the device itself */
+/* enable write gathering through ATE */
+#define	BRIDGE_DEVICE_WGATHER_PMU		0x01000000
+/* enable write gathering through the direct window */
+#define	BRIDGE_DEVICE_WGATHER_DIR		0x00800000
 /* byteswap DMA done through ATE */
 #define	BRIDGE_DEVICE_SWAP_PMU			0x00100000
 /* byteswap DMA done through the direct window */

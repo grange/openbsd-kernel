@@ -1,4 +1,4 @@
-/*	$OpenBSD: disksubr.c,v 1.86 2010/04/25 06:15:17 deraadt Exp $	*/
+/*	$OpenBSD: disksubr.c,v 1.90 2011/04/16 03:21:15 krw Exp $	*/
 /*	$NetBSD: disksubr.c,v 1.16 1996/04/28 20:25:59 thorpej Exp $ */
 
 /*
@@ -61,10 +61,6 @@ extern void cdstrategy(struct buf *);
  * secpercyl, secsize and anything required for a block i/o read
  * operation in the driver's strategy/start routines
  * must be filled in before calling us.
- *
- * Return buffer for use in signalling errors if requested.
- *
- * Returns null on success and an error string on failure.
  */
 int
 readdisklabel(dev_t dev, void (*strat)(struct buf *),
@@ -106,7 +102,8 @@ readdisklabel(dev_t dev, void (*strat)(struct buf *),
 
 	bp->b_blkno = LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp)) {
 		error = bp->b_error;
@@ -145,6 +142,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -168,7 +166,8 @@ writedisklabel(dev_t dev, void (*strat)(struct buf *), struct disklabel *lp)
 	/* Write out the updated label. */
 	bp->b_blkno = LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_WRITE | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_WRITE | B_RAW);
 	(*strat)(bp);
 	error = biowait(bp);
 
@@ -177,6 +176,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -228,7 +228,6 @@ sun_extended_sum(struct sun_disklabel *sl, void *end)
 
 /*
  * Given a SunOS disk label, set lp to a BSD disk label.
- * Returns NULL on success, else an error string.
  *
  * The BSD label is cleared out before this is called.
  */
@@ -389,7 +388,6 @@ disklabel_sun_to_bsd(struct sun_disklabel *sl, struct disklabel *lp)
  * Given a BSD disk label, update the Sun disklabel
  * pointed to by cp with the new info.  Note that the
  * Sun disklabel may have other info we need to keep.
- * Returns zero or error code.
  */
 static int
 disklabel_bsd_to_sun(struct disklabel *lp, struct sun_disklabel *sl)

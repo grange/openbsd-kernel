@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_glue.c,v 1.55 2010/07/02 22:38:32 thib Exp $	*/
+/*	$OpenBSD: uvm_glue.c,v 1.58 2011/04/15 21:47:24 oga Exp $	*/
 /*	$NetBSD: uvm_glue.c,v 1.44 2001/02/06 19:54:44 eeh Exp $	*/
 
 /* 
@@ -222,8 +222,10 @@ uvm_vslock_device(struct proc *p, void *addr, size_t len,
 		paddr_t pa;
 
 		if (!pmap_extract(p->p_vmspace->vm_map.pmap,
-		    start + ptoa(i), &pa))
-			return (EFAULT);
+		    start + ptoa(i), &pa)) {
+			error = EFAULT;
+			goto out_unwire;
+		}
 		if (!PADDR_IS_DMA_REACHABLE(pa))
 			break;
 	}
@@ -233,15 +235,17 @@ uvm_vslock_device(struct proc *p, void *addr, size_t len,
 	}
 
 	if ((va = uvm_km_valloc(kernel_map, sz)) == 0) {
-		return (ENOMEM);
+		error = ENOMEM;
+		goto out_unwire;
 	}
+	sva = va;
 
 	TAILQ_INIT(&pgl);
 	error = uvm_pglistalloc(npages * PAGE_SIZE, dma_constraint.ucr_low,
 	    dma_constraint.ucr_high, 0, 0, &pgl, npages, UVM_PLA_WAITOK);
-	KASSERT(error == 0);
+	if (error)
+		goto out_unmap;
 
-	sva = va;
 	while ((pg = TAILQ_FIRST(&pgl)) != NULL) {
 		TAILQ_REMOVE(&pgl, pg, pageq);
 		pmap_kenter_pa(va, VM_PAGE_TO_PHYS(pg),
@@ -252,7 +256,16 @@ uvm_vslock_device(struct proc *p, void *addr, size_t len,
 	KASSERT(va == sva + sz);
 	*retp = (void *)(sva + off);
 
-	error = copyin(addr, *retp, len);	
+	if ((error = copyin(addr, *retp, len)) == 0)
+		return 0;
+
+	uvm_km_pgremove_intrsafe(sva, sva + sz);
+	pmap_kremove(sva, sz);
+	pmap_update(pmap_kernel());
+out_unmap:
+	uvm_km_free(kernel_map, sva, sz);
+out_unwire:
+	uvm_fault_unwire(&p->p_vmspace->vm_map, start, end);
 	return (error);
 }
 
@@ -277,9 +290,9 @@ uvm_vsunlock_device(struct proc *p, void *addr, size_t len, void *map)
 		return;
 
 	kva = trunc_page((vaddr_t)map);
+	uvm_km_pgremove_intrsafe(kva, kva + sz);
 	pmap_kremove(kva, sz);
 	pmap_update(pmap_kernel());
-	uvm_km_pgremove_intrsafe(kva, kva + sz);
 	uvm_km_free(kernel_map, kva, sz);
 }
 
@@ -462,3 +475,20 @@ uvm_swapout_threads(void)
 			pmap_collect(p->p_vmspace->vm_map.pmap);
 	}
 }
+
+/*
+ * uvm_atopg: convert KVAs back to their page structures.
+ */
+struct vm_page *
+uvm_atopg(vaddr_t kva)
+{
+	struct vm_page *pg;
+	paddr_t pa;
+	boolean_t rv;
+ 
+	rv = pmap_extract(pmap_kernel(), kva, &pa);
+	KASSERT(rv);
+	pg = PHYS_TO_VM_PAGE(pa);
+	KASSERT(pg != NULL);
+	return (pg);
+} 

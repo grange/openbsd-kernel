@@ -1,4 +1,4 @@
-/*	$OpenBSD: mount.h,v 1.100 2010/06/29 04:09:32 tedu Exp $	*/
+/*	$OpenBSD: mount.h,v 1.103 2011/04/05 18:51:26 thib Exp $	*/
 /*	$NetBSD: mount.h,v 1.48 1996/02/18 11:55:47 fvdl Exp $	*/
 
 /*
@@ -156,9 +156,7 @@ struct nfs_args3 {
 /*
  * NFS mount option flags
  */
-#ifndef _KERNEL
 #define	NFSMNT_RESVPORT		0x00000000  /* always use reserved ports */
-#endif /* ! _KERNEL */
 #define	NFSMNT_SOFT		0x00000001  /* soft mount (hard is default) */
 #define	NFSMNT_WSIZE		0x00000002  /* set write size */
 #define	NFSMNT_RSIZE		0x00000004  /* set read size */
@@ -174,9 +172,7 @@ struct nfs_args3 {
 #define	NFSMNT_LEASETERM	0x00001000  /* set lease term (nqnfs) */
 #define	NFSMNT_READAHEAD	0x00002000  /* set read ahead */
 #define	NFSMNT_DEADTHRESH	0x00004000  /* set dead server retry thresh */
-#ifdef _KERNEL /* Coming soon to a system call near you! */
 #define	NFSMNT_NOAC		0x00008000  /* disable attribute cache */
-#endif /* _KERNEL */
 #define	NFSMNT_RDIRPLUS		0x00010000  /* Use Readdirplus for V3 */
 #define	NFSMNT_READDIRSIZE	0x00020000  /* Set readdir size */
 
@@ -314,28 +310,6 @@ struct statfs {
 	union mount_info mount_info;	/* per-filesystem mount options */
 };
 
-/* old (pre-4.3) statfs structure with mount options */
-struct o43statfs {
-	u_int32_t  f_flags;		/* copy of mount flags */
-	int32_t    f_bsize;		/* fundamental file system block size */
-	u_int32_t  f_iosize;		/* optimal transfer block size */
-	u_int32_t  f_blocks;		/* total data blocks in file system */
-	u_int32_t  f_bfree;		/* free blocks in fs */
-	int32_t    f_bavail;		/* free blocks avail to non-superuser */
-	u_int32_t  f_files;		/* total file nodes in file system */
-	u_int32_t  f_ffree;		/* free file nodes in fs */
-	fsid_t	   f_fsid;		/* file system id */
-	uid_t	   f_owner;		/* user that mounted the file system */
-	u_int32_t  f_syncwrites;	/* count of sync writes since mount */
-	u_int32_t  f_asyncwrites;	/* count of async writes since mount */
-	u_int32_t  f_ctime;		/* last mount [-u] time */
-	u_int32_t  f_spare[3];		/* spare for later */
-	char	   f_fstypename[MFSNAMELEN]; /* fs type name */
-	char	   f_mntonname[MNAMELEN];    /* directory on which mounted */
-	char	   f_mntfromname[MNAMELEN];  /* mounted file system */
-	union mount_info mount_info;	    /* per-filesystem mount options */
-};
-
 /* old (pre-2.6) statfs structure */
 struct ostatfs {
 	short	f_type;			/* type of file system (unused; zero) */
@@ -365,7 +339,6 @@ struct ostatfs {
 #define	MOUNT_NFS	"nfs"		/* Network Filesystem */
 #define	MOUNT_MFS	"mfs"		/* Memory Filesystem */
 #define	MOUNT_MSDOS	"msdos"		/* MSDOS Filesystem */
-#define	MOUNT_PORTAL	"portal"	/* Portal Filesystem */
 #define	MOUNT_PROCFS	"procfs"	/* /proc Filesystem */
 #define	MOUNT_AFS	"afs"		/* Andrew Filesystem */
 #define	MOUNT_CD9660	"cd9660"	/* ISO9660 (aka CDROM) Filesystem */
@@ -452,6 +425,24 @@ struct mount {
 #define MNT_DOOMED	0x08000000	/* device behind filesystem is gone */
 
 /*
+ * Flags for various system call interfaces.
+ *
+ * waitfor flags to vfs_sync() and getfsstat()
+ */
+#define MNT_WAIT	1	/* synchronously wait for I/O to complete */
+#define MNT_NOWAIT	2	/* start all I/O, but do not wait for it */
+#define MNT_LAZY	3	/* push data not written by filesystem syncer */
+
+/*
+ * Generic file handle
+ */
+struct fhandle {
+	fsid_t	fh_fsid;	/* File system id of mount point */
+	struct	fid fh_fid;	/* File sys specific id */
+};
+typedef struct fhandle	fhandle_t;
+
+/*
  * Sysctl CTL_VFS definitions.
  *
  * Second level identifier specifies which filesystem. Second level
@@ -514,16 +505,12 @@ extern long buflowpages, bufhighpages, bufbackpages;
 extern int bufcachepercent;
 extern void bufadjust(int);
 extern int bufbackoff(void);
-#endif
 
 /*
  * Operations supported on mounted file system.
  */
-#ifdef _KERNEL
-#ifdef __STDC__
 struct nameidata;
 struct mbuf;
-#endif
 
 extern int maxvfsconf;		/* highest defined filesystem type */
 extern struct vfsconf *vfsconf;	/* head of list of filesystem types */
@@ -569,27 +556,8 @@ struct vfsops {
 #define	VFS_VPTOFH(VP, FIDP)	  (*(VP)->v_mount->mnt_op->vfs_vptofh)(VP, FIDP)
 #define VFS_CHECKEXP(MP, NAM, EXFLG, CRED) \
 	(*(MP)->mnt_op->vfs_checkexp)(MP, NAM, EXFLG, CRED)
-#endif /* _KERNEL */
 
-/*
- * Flags for various system call interfaces.
- *
- * waitfor flags to vfs_sync() and getfsstat()
- */
-#define MNT_WAIT	1	/* synchronously wait for I/O to complete */
-#define MNT_NOWAIT	2	/* start all I/O, but do not wait for it */
-#define MNT_LAZY	3	/* push data not written by filesystem syncer */
 
-/*
- * Generic file handle
- */
-struct fhandle {
-	fsid_t	fh_fsid;	/* File system id of mount point */
-	struct	fid fh_fid;	/* File sys specific id */
-};
-typedef struct fhandle	fhandle_t;
-
-#ifdef _KERNEL
 #include <net/radix.h>
 #include <sys/socket.h>		/* XXX for AF_MAX */
 
@@ -609,9 +577,7 @@ struct netexport {
 	struct	netcred ne_defexported;		      /* Default export */
 	struct	radix_node_head *ne_rtable[AF_MAX+1]; /* Individual exports */
 };
-#endif /* _KERNEL */
 
-#ifdef _KERNEL
 /*
  * exported vnode operations
  */
@@ -648,11 +614,6 @@ void	vfsinit(void);
 int	vfs_register(struct vfsconf *);
 int	vfs_unregister(struct vfsconf *);
 #else /* _KERNEL */
-
-#ifndef _SYS_STAT_H_
-struct stat;
-#endif
-
 __BEGIN_DECLS
 int	fstatfs(int, struct statfs *);
 int	getfh(const char *, fhandle_t *);
@@ -662,12 +623,11 @@ int	mount(const char *, const char *, int, void *);
 int	statfs(const char *, struct statfs *);
 int	unmount(const char *, int);
 #if __BSD_VISIBLE
+struct stat;
 int	fhopen(const fhandle_t *, int);
 int	fhstat(const fhandle_t *, struct stat *);
 int	fhstatfs(const fhandle_t *, struct statfs *);
 #endif /* __BSD_VISIBLE */
-
 __END_DECLS
-
 #endif /* _KERNEL */
 #endif /* !_SYS_MOUNT_H_ */

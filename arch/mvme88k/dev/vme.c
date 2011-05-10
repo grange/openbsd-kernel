@@ -1,4 +1,4 @@
-/*	$OpenBSD: vme.c,v 1.49 2009/02/17 21:03:21 miod Exp $ */
+/*	$OpenBSD: vme.c,v 1.51 2011/04/12 21:38:18 miod Exp $ */
 /*
  * Copyright (c) 2004, Miodrag Vallat.
  * Copyright (c) 1999 Steve Murphree, Jr.
@@ -94,7 +94,7 @@ vme_map(bus_addr_t addr, bus_size_t size, int flags, bus_space_handle_t *ret)
 	vaddr_t map;
 
 	map = (vaddr_t)mapiodev((paddr_t)addr, size);
-	if (map == NULL)
+	if (map == 0)
 		return ENOMEM;
 
 	*ret = (bus_space_handle_t)map;
@@ -343,7 +343,7 @@ vmepmap(sc, vmeaddr, bustype)
 #endif
 			base = vme2chip_map(base, 16);
 #ifdef DEBUG
-			if (base == NULL) {
+			if (base == 0) {
 				printf("%s: cannot map pa 0x%x\n",
 				    sc->dv_xname, base);
 			}
@@ -356,7 +356,7 @@ vmepmap(sc, vmeaddr, bustype)
 #endif
 			base = vme2chip_map(base, 32);
 #ifdef DEBUG
-			if (base == NULL) {
+			if (base == 0) {
 				printf("%s: cannot map pa 0x%x\n",
 				    sc->dv_xname, base);
 			}
@@ -366,7 +366,7 @@ vmepmap(sc, vmeaddr, bustype)
 		break;
 #endif
 	default:
-		return NULL;
+		return 0;
 	}
 	return (base);
 }
@@ -381,8 +381,8 @@ vmemap(struct vmesoftc *sc, off_t vmeaddr)
 	paddr_t pa;
 
 	pa = vmepmap((struct device *)sc, vmeaddr, BUS_VMES);
-	if (pa == NULL)
-		return (NULL);
+	if (pa == 0)
+		return (0);
 	return mapiodev(pa, PAGE_SIZE);
 }
 
@@ -422,7 +422,7 @@ vmerw(sc, uio, flags, bus)
 		if (c == 0)
 			return 0;
 		vme = vmemap((struct vmesoftc *)sc, v & ~PGOFSET);
-		if (vme == NULL)
+		if (vme == 0)
 			return EACCES;
 		error = uiomove((void *)vme + (v & PGOFSET), c, uio);
 		vmeunmap(vme);
@@ -626,15 +626,15 @@ vme2chip_map(base, dwidth)
 	case 16:
 		if (base < VME2_D16STARTPHYS ||
 		    base + PAGE_SIZE > VME2_D16ENDPHYS)
-			return NULL;
+			return 0;
 		break;
 	case 32:
 		if (base < VME2_D32STARTPHYS ||
 		    base + PAGE_SIZE > VME2_D32ENDPHYS)
-			return NULL;
+			return 0;
 		break;
 	default:
-		return NULL;
+		return 0;
 	}
 	return base;
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: pmap.h,v 1.16 2011/01/04 21:11:41 miod Exp $	*/
+/*	$OpenBSD: pmap.h,v 1.18 2011/04/28 20:50:58 ariane Exp $	*/
 /*	$NetBSD: pmap.h,v 1.76 2003/09/06 09:10:46 rearnsha Exp $	*/
 
 /*
@@ -66,8 +66,8 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef	_ARM32_PMAP_H_
-#define	_ARM32_PMAP_H_
+#ifndef	_ARM_PMAP_H_
+#define	_ARM_PMAP_H_
 
 #ifdef _KERNEL
 
@@ -620,8 +620,16 @@ vaddr_t	pmap_prefer(vaddr_t, vaddr_t);
 
 extern uint32_t pmap_alias_dist;
 extern uint32_t pmap_alias_bits;
+
+/* pmap prefer alias alignment. */
+#define PMAP_PREFER_ALIGN()	(pmap_alias_dist)
+/* pmap prefer offset withing alignment. */
+#define PMAP_PREFER_OFFSET(of)						\
+    (PMAP_PREFER_ALIGN() == 0 ? 0 : ((of) & (PMAP_PREFER_ALIGN() - 1)))
+
+
 #endif /* _LOCORE */
 
 #endif /* _KERNEL */
 
-#endif	/* _ARM32_PMAP_H_ */
+#endif	/* _ARM_PMAP_H_ */
