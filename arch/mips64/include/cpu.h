@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.69 2010/11/24 21:16:26 miod Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.71 2011/03/31 20:37:44 miod Exp $	*/
 
 /*-
  * Copyright (c) 1992, 1993
@@ -42,8 +42,8 @@
  *	from: @(#)cpu.h	8.4 (Berkeley) 1/4/94
  */
 
-#ifndef _MIPS_CPU_H_
-#define	_MIPS_CPU_H_
+#ifndef _MIPS64_CPU_H_
+#define	_MIPS64_CPU_H_
 
 #ifndef _LOCORE
 
@@ -540,7 +540,7 @@ void cpu_startclock(struct cpu_info *);
 #define	MIPS_RM9000	0x34	/* PMCS RM9000 CPU		ISA IV  */
 #define	MIPS_LOONGSON	0x42	/* STC LoongSon CPU		ISA III */
 #define	MIPS_VR5400	0x54	/* NEC Vr5400 CPU		ISA IV+ */
-#define	MIPS_LOONGSON2	0x63	/* STC LoongSon2 CPU		ISA III */
+#define	MIPS_LOONGSON2	0x63	/* STC LoongSon2/3 CPU		ISA III+ */
 
 /*
  * MIPS FPU types. Only soft, rest is the same as cpu type.
@@ -635,4 +635,4 @@ uint32_t getsr(void);
 uint32_t setsr(uint32_t);
 
 #endif /* _KERNEL && !_LOCORE */
-#endif /* !_MIPS_CPU_H_ */
+#endif /* !_MIPS64_CPU_H_ */

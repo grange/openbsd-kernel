@@ -1,4 +1,4 @@
-/*	$OpenBSD: linux_misc.c,v 1.65 2010/07/26 01:56:27 guenther Exp $	*/
+/*	$OpenBSD: linux_misc.c,v 1.67 2011/04/05 15:36:09 pirofti Exp $	*/
 /*	$NetBSD: linux_misc.c,v 1.27 1996/05/20 01:59:21 fvdl Exp $	*/
 
 /*-
@@ -1225,7 +1225,7 @@ linux_sys_getpgid(p, v, retval)
 	} */ *uap = v;
 	struct process *targpr;
 
-	if (SCARG(uap, pid) != 0 && SCARG(uap, pid) != p->p_pid) {
+	if (SCARG(uap, pid) != 0 && SCARG(uap, pid) != p->p_p->ps_pid) {
 		if ((targpr = prfind(SCARG(uap, pid))) == 0)
 			return ESRCH;
 	}
@@ -1409,7 +1409,7 @@ linux_sys_getpid(p, v, retval)
 	register_t *retval;
 {
 
-	*retval = p->p_pid;
+	*retval = p->p_p->ps_pid;
 	return (0);
 }
 
@@ -1473,4 +1473,14 @@ linux_sys_sysinfo(p, v, retval)
 	si.mem_unit = 1;
 
 	return (copyout(&si, SCARG(uap, sysinfo), sizeof(si)));
+}
+
+int
+linux_sys_mprotect(struct proc *p, void *v, register_t *retval)
+{
+	struct sys_mprotect_args *uap = v;
+
+	if (SCARG(uap, prot) & (PROT_WRITE | PROT_EXEC))
+		SCARG(uap, prot) |= PROT_READ;
+	return (sys_mprotect(p, uap, retval));
 }

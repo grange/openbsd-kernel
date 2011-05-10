@@ -1,4 +1,4 @@
-/*	$OpenBSD: wd.c,v 1.97 2010/12/31 22:58:40 kettenis Exp $ */
+/*	$OpenBSD: wd.c,v 1.100 2011/04/18 04:16:13 deraadt Exp $ */
 /*	$NetBSD: wd.c,v 1.193 1999/02/28 17:15:27 explorer Exp $ */
 
 /*
@@ -113,40 +113,6 @@ extern int wdcdebug_wd_mask; /* init'ed in ata_wdc.c */
 #define WDCDEBUG_PRINT(args, level)
 #endif
 
-struct wd_softc {
-	/* General disk infos */
-	struct device sc_dev;
-	struct disk sc_dk;
-	struct bufq sc_bufq;
-
-	/* IDE disk soft states */
-	struct ata_bio sc_wdc_bio; /* current transfer */
-	struct buf *sc_bp; /* buf being transferred */
-	struct ata_drive_datas *drvp; /* Our controller's infos */
-	int openings;
-	struct ataparams sc_params;/* drive characteristics found */
-	int sc_flags;
-#define WDF_LOCKED	  0x01
-#define WDF_WANTED	  0x02
-#define WDF_WLABEL	  0x04 /* label is writable */
-#define WDF_LABELLING	  0x08 /* writing label */
-/*
- * XXX Nothing resets this yet, but disk change sensing will when ATA-4 is
- * more fully implemented.
- */
-#define WDF_LOADED	0x10 /* parameters loaded */
-#define WDF_WAIT	0x20 /* waiting for resources */
-#define WDF_LBA		0x40 /* using LBA mode */
-#define WDF_LBA48	0x80 /* using 48-bit LBA mode */
-
-	u_int64_t sc_capacity;
-	int cyl; /* actual drive parameters */
-	int heads;
-	int sectors;
-	int retries; /* number of xfer retry */
-	struct timeout sc_restart_timeout;
-	void *sc_sdhook;
-};
 
 #define sc_drive sc_wdc_bio.drive
 #define sc_mode sc_wdc_bio.mode
@@ -389,13 +355,14 @@ wdactivate(struct device *self, int act)
 		/*
 		 * Do two resets separated by a small delay. The
 		 * first wakes the controller, the second resets
-		 * the channel
+		 * the channel.
 		 */
 		wdc_disable_intr(wd->drvp->chnl_softc);
-		wdc_reset_channel(wd->drvp);
+		wdc_reset_channel(wd->drvp, 1);
 		delay(10000);
-		wdc_reset_channel(wd->drvp);
+		wdc_reset_channel(wd->drvp, 0);
 		wdc_enable_intr(wd->drvp->chnl_softc);
+		wd_get_params(wd, at_poll, &wd->sc_params);
 		break;
 	}
 	return (rv);
@@ -407,6 +374,8 @@ wddetach(struct device *self, int flags)
 	struct wd_softc *sc = (struct wd_softc *)self;
 	struct buf *bp;
 	int s, bmaj, cmaj, mn;
+
+	timeout_del(&sc->sc_restart_timeout);
 
 	/* Remove unprocessed buffers from queue */
 	s = splbio();
@@ -616,7 +585,7 @@ wddone(void *v)
 		    sizeof buf);
 retry:
 		/* Just reset and retry. Can we do more ? */
-		wdc_reset_channel(wd->drvp);
+		wdc_reset_channel(wd->drvp, 0);
 		diskerr(bp, "wd", errbuf, LOG_PRINTF,
 		    wd->sc_wdc_bio.blkdone, wd->sc_dk.dk_label);
 		if (wd->retries++ < WDIORETRIES) {
@@ -645,9 +614,14 @@ wdrestart(void *v)
 {
 	struct wd_softc *wd = v;
 	struct buf *bp = wd->sc_bp;
+	struct channel_softc *chnl;
 	int s;
 	WDCDEBUG_PRINT(("wdrestart %s\n", wd->sc_dev.dv_xname),
 	    DEBUG_XFERS);
+
+	chnl = (struct channel_softc *)(wd->drvp->chnl_softc);
+	if (chnl->dying)
+		return;
 
 	s = splbio();
 	disk_unbusy(&wd->sc_dk, 0, (bp->b_flags & B_READ));
@@ -675,6 +649,7 @@ int
 wdopen(dev_t dev, int flag, int fmt, struct proc *p)
 {
 	struct wd_softc *wd;
+	struct channel_softc *chnl;
 	int unit, part;
 	int error;
 
@@ -684,6 +659,9 @@ wdopen(dev_t dev, int flag, int fmt, struct proc *p)
 	wd = wdlookup(unit);
 	if (wd == NULL)
 		return ENXIO;
+	chnl = (struct channel_softc *)(wd->drvp->chnl_softc);
+	if (chnl->dying)
+		return (ENXIO);
 
 	/*
 	 * If this is the first open of this device, add a reference

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mpi.c,v 1.165 2010/09/24 01:27:11 dlg Exp $ */
+/*	$OpenBSD: mpi.c,v 1.171 2011/04/27 06:06:30 dlg Exp $ */
 
 /*
  * Copyright (c) 2005, 2006, 2009 David Gwynne <dlg@openbsd.org>
@@ -104,7 +104,7 @@ int			mpi_ppr(struct mpi_softc *, struct scsi_link *,
 int			mpi_inq(struct mpi_softc *, u_int16_t, int);
 
 int			mpi_cfg_sas(struct mpi_softc *);
-void			mpi_fc_info(struct mpi_softc *);
+int			mpi_cfg_fc(struct mpi_softc *);
 
 void			mpi_timeout_xs(void *);
 int			mpi_load_xs(struct mpi_ccb *);
@@ -300,7 +300,8 @@ mpi_attach(struct mpi_softc *sc)
 			goto free_replies;
 		break;
 	case MPI_PORTFACTS_PORTTYPE_FC:
-		mpi_fc_info(sc);
+		if (mpi_cfg_fc(sc) != 0)
+			goto free_replies;
 		break;
 	}
 
@@ -344,10 +345,7 @@ mpi_attach(struct mpi_softc *sc)
 	sc->sc_link.adapter_softc = sc;
 	sc->sc_link.adapter_target = sc->sc_target;
 	sc->sc_link.adapter_buswidth = sc->sc_buswidth;
-	if (sc->sc_porttype == MPI_PORTFACTS_PORTTYPE_SCSI)
-		sc->sc_link.openings = sc->sc_maxcmds / sc->sc_buswidth;
-	else
-		sc->sc_link.openings = sc->sc_maxcmds;
+	sc->sc_link.openings = sc->sc_maxcmds / sc->sc_buswidth;
 	sc->sc_link.pool = &sc->sc_iopool;
 
 	bzero(&saa, sizeof(saa));
@@ -853,28 +851,48 @@ out:
 	return (rv);
 }
 
-void
-mpi_fc_info(struct mpi_softc *sc)
+int
+mpi_cfg_fc(struct mpi_softc *sc)
 {
 	struct mpi_cfg_hdr		hdr;
-	struct mpi_cfg_fc_port_pg0	pg;
+	struct mpi_cfg_fc_port_pg0	pg0;
+	struct mpi_cfg_fc_port_pg1	pg1;
 
 	if (mpi_cfg_header(sc, MPI_CONFIG_REQ_PAGE_TYPE_FC_PORT, 0, 0,
 	    &hdr) != 0) {
-		DNPRINTF(MPI_D_MISC, "%s: mpi_fc_print unable to fetch "
-		    "FC port header 0\n", DEVNAME(sc));
-		return;
+		printf("%s: unable to fetch FC port header 0\n", DEVNAME(sc));
+		return (1);
 	}
 
-	if (mpi_cfg_page(sc, 0, &hdr, 1, &pg, sizeof(pg)) != 0) {
-		DNPRINTF(MPI_D_MISC, "%s: mpi_fc_print unable to fetch "
-		    "FC port page 0\n",
-		    DEVNAME(sc));
-		return;
+	if (mpi_cfg_page(sc, 0, &hdr, 1, &pg0, sizeof(pg0)) != 0) {
+		printf("%s: unable to fetch FC port page 0\n", DEVNAME(sc));
+		return (1);
 	}
 
-	sc->sc_link.port_wwn = letoh64(pg.wwpn);
-	sc->sc_link.node_wwn = letoh64(pg.wwnn);
+	sc->sc_link.port_wwn = letoh64(pg0.wwpn);
+	sc->sc_link.node_wwn = letoh64(pg0.wwnn);
+
+	/* configure port config more to our liking */
+	if (mpi_cfg_header(sc, MPI_CONFIG_REQ_PAGE_TYPE_FC_PORT, 1, 0,
+	    &hdr) != 0) {
+		printf("%s: unable to fetch FC port header 1\n", DEVNAME(sc));
+		return (1);
+	}
+
+	if (mpi_cfg_page(sc, 0, &hdr, 1, &pg1, sizeof(pg1)) != 0) {
+		printf("%s: unable to fetch FC port page 1\n", DEVNAME(sc));
+		return (1);
+	}
+
+	SET(pg1.flags, htole32(MPI_CFG_FC_PORT_0_FLAGS_IMMEDIATE_ERROR |
+	    MPI_CFG_FC_PORT_0_FLAGS_VERBOSE_RESCAN));
+
+	if (mpi_cfg_page(sc, 0, &hdr, 0, &pg1, sizeof(pg1)) != 0) {
+		printf("%s: unable to set FC port page 1\n", DEVNAME(sc));
+		return (1);
+	}
+
+	return (0);
 }
 
 void
@@ -889,6 +907,9 @@ mpi_intr(void *arg)
 	struct mpi_softc		*sc = arg;
 	u_int32_t			reg;
 	int				rv = 0;
+
+	if ((mpi_read_intr(sc) & MPI_INTR_STATUS_REPLY) == 0)
+		return (rv);
 
 	while ((reg = mpi_pop_reply(sc)) != 0xffffffff) {
 		mpi_reply(sc, reg);
@@ -1449,6 +1470,11 @@ mpi_scsi_cmd_done(struct mpi_ccb *ccb)
 		xs->error = XS_SELTIMEOUT;
 		break;
 
+	case MPI_IOCSTATUS_SCSI_IOC_TERMINATED:
+	case MPI_IOCSTATUS_SCSI_EXT_TERMINATED:
+		xs->error = XS_RESET;
+		break;
+
 	default:
 		xs->error = XS_DRIVER_STUFFUP;
 		break;
@@ -1603,7 +1629,7 @@ mpi_scsi_probe_virtual(struct scsi_link *link)
 	rv = mpi_req_cfg_header(sc, MPI_CONFIG_REQ_PAGE_TYPE_RAID_VOL,
 	    0, link->target, MPI_PG_POLL, &hdr);
 	if (rv != 0)
-		return (rv);
+		return (0);
 
 	len = hdr.page_length * 4;
 	rp0 = malloc(len, M_TEMP, M_NOWAIT);
@@ -2462,28 +2488,39 @@ mpi_fc_rescan(void *xsc, void *xarg)
 	struct mpi_cfg_hdr			hdr;
 	struct mpi_cfg_fc_device_pg0		pg;
 	struct scsi_link			*link;
-	u_int32_t				id;
+	u_int8_t				devmap[256 / NBBY];
+	u_int32_t				id = 0xffffff;
 	int					i;
 
 	mtx_enter(&sc->sc_evt_rescan_mtx);
 	sc->sc_evt_rescan_sem = 0;
 	mtx_leave(&sc->sc_evt_rescan_mtx);
 
-	for (i = 0; i < sc->sc_buswidth; i++) {
-		id = MPI_PAGE_ADDRESS_FC_BTID | i;
+	bzero(devmap, sizeof(devmap));
 
+	do {
 		if (mpi_req_cfg_header(sc, MPI_CONFIG_REQ_PAGE_TYPE_FC_DEV, 0,
 		    id, 0, &hdr) != 0) {
-			printf("%s: header get for rescan of %d failed\n",
-			    DEVNAME(sc), i);
+			printf("%s: header get for rescan of 0x%08x failed\n",
+			    DEVNAME(sc), id);
 			return;
 		}
 
+		bzero(&pg, sizeof(pg));
+		if (mpi_req_cfg_page(sc, id, 0, &hdr, 1, &pg, sizeof(pg)) != 0)
+			break;
+
+		if (ISSET(pg.flags, MPI_CFG_FC_DEV_0_FLAGS_BUSADDR_VALID) &&
+		    pg.current_bus == 0)
+			setbit(devmap, pg.current_target_id);
+
+		id = htole32(pg.port_id);
+	} while (id <= 0xff0000);
+
+	for (i = 0; i < sc->sc_buswidth; i++) {
 		link = scsi_get_link(sc->sc_scsibus, i, 0);
 
-		memset(&pg, 0, sizeof(pg));
-		if (mpi_req_cfg_page(sc, id, 0, &hdr, 1,
-		    &pg, sizeof(pg)) == 0) {
+		if (isset(devmap, i)) {
 			if (link == NULL)
 				scsi_probe_target(sc->sc_scsibus, i);
 		} else {

@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.106 2010/10/24 15:40:03 miod Exp $ */
+/*	$OpenBSD: machdep.c,v 1.108 2011/04/21 18:09:49 miod Exp $ */
 
 /*
  * Copyright (c) 2003-2004 Opsycon AB  (www.opsycon.se / www.opsycon.com)
@@ -97,7 +97,10 @@ int	bufcachepercent = BUFCACHEPERCENT;
 
 /* low 32 bits range. */
 struct uvm_constraint_range  dma_constraint = { 0x0, 0x7fffffff };
-struct uvm_constraint_range *uvm_md_constraints[] = { NULL };
+struct uvm_constraint_range *uvm_md_constraints[] = {
+	&dma_constraint,
+	NULL
+};
 
 vm_map_t exec_map;
 vm_map_t phys_map;
@@ -239,7 +242,6 @@ mips_init(int argc, void *argv, caddr_t boot_esym)
 		ip32_setup();
 		break;
 #endif
-
 #ifdef TGT_ORIGIN
 	case SGI_IP27:
 		bios_printf("Found SGI-IP27, setting up.\n");
@@ -256,7 +258,6 @@ mips_init(int argc, void *argv, caddr_t boot_esym)
 
 		break;
 #endif
-
 #ifdef TGT_OCTANE
 	case SGI_OCTANE:
 		bios_printf("Found SGI-IP30, setting up.\n");
@@ -264,7 +265,6 @@ mips_init(int argc, void *argv, caddr_t boot_esym)
 		ip30_setup();
 		break;
 #endif
-
 	default:
 		bios_printf("Kernel doesn't support this system type!\n");
 		bios_printf("Halting system.\n");
@@ -276,7 +276,6 @@ mips_init(int argc, void *argv, caddr_t boot_esym)
 	 * Look at arguments passed to us and compute boothowto.
 	 */
 	boothowto = RB_AUTOBOOT;
-
 	dobootopts(argc, argv);
 
 	/*
@@ -446,7 +445,7 @@ mips_init(int argc, void *argv, caddr_t boot_esym)
 	/*
 	 * Init message buffer.
 	 */
-	msgbufbase = (caddr_t)pmap_steal_memory(MSGBUFSIZE, NULL,NULL);
+	msgbufbase = (caddr_t)pmap_steal_memory(MSGBUFSIZE, NULL, NULL);
 	initmsgbuf(msgbufbase, MSGBUFSIZE);
 
 	/*
@@ -546,11 +545,11 @@ dobootopts(int argc, void *argv)
 		 */
 		if (strncmp(cp, "OSLoadOptions=", 14) == 0) {
 			if (strcmp(&cp[14], "auto") == 0)
-					boothowto &= ~(RB_SINGLE|RB_ASKNAME);
+				boothowto &= ~(RB_SINGLE|RB_ASKNAME);
 			else if (strcmp(&cp[14], "single") == 0)
-					boothowto |= RB_SINGLE;
+				boothowto |= RB_SINGLE;
 			else if (strcmp(&cp[14], "debug") == 0)
-					boothowto |= RB_KDB;
+				boothowto |= RB_KDB;
 			continue;
 		}
 
@@ -611,10 +610,10 @@ cpu_startup()
 	 * Good {morning,afternoon,evening,night}.
 	 */
 	printf(version);
-	printf("real mem = %u (%uMB)\n", ptoa(physmem),
-	    ptoa(physmem)/1024/1024);
-	printf("rsvd mem = %u (%uMB)\n", ptoa(rsvdmem),
-	    ptoa(rsvdmem)/1024/1024);
+	printf("real mem = %lu (%luMB)\n", ptoa((psize_t)physmem),
+	    ptoa((psize_t)physmem)/1024/1024);
+	printf("rsvd mem = %lu (%luMB)\n", ptoa((psize_t)rsvdmem),
+	    ptoa((psize_t)rsvdmem)/1024/1024);
 
 	/*
 	 * Allocate a submap for exec arguments. This map effectively
@@ -630,8 +629,8 @@ cpu_startup()
 #ifdef PMAPDEBUG
 	pmapdebug = opmapdebug;
 #endif
-	printf("avail mem = %u (%uMB)\n", ptoa(uvmexp.free),
-	    ptoa(uvmexp.free)/1024/1024);
+	printf("avail mem = %lu (%luMB)\n", ptoa((psize_t)uvmexp.free),
+	    ptoa((psize_t)uvmexp.free)/1024/1024);
 
 	/*
 	 * Set up CPU-specific registers, cache, etc.

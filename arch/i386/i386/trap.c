@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.94 2010/07/20 00:16:39 deraadt Exp $	*/
+/*	$OpenBSD: trap.c,v 1.96 2011/04/05 12:50:15 guenther Exp $	*/
 /*	$NetBSD: trap.c,v 1.95 1996/05/05 06:50:02 mycroft Exp $	*/
 
 /*-
@@ -75,9 +75,6 @@
 #ifdef COMPAT_LINUX
 #include <compat/linux/linux_syscall.h>
 extern struct emul emul_linux_aout, emul_linux_elf;
-#endif
-#ifdef COMPAT_FREEBSD
-extern struct emul emul_freebsd_aout, emul_freebsd_elf;
 #endif
 #ifdef COMPAT_AOUT
 extern struct emul emul_aout;
@@ -627,10 +624,6 @@ syscall(struct trapframe *frame)
 		 * quad alignment for the rest of the arguments.
 		 */
 		if (callp != sysent
-#ifdef COMPAT_FREEBSD
-		    && p->p_emul != &emul_freebsd_aout
-		    && p->p_emul != &emul_freebsd_elf
-#endif
 #ifdef COMPAT_AOUT
 		    && p->p_emul != &emul_aout
 #endif
@@ -786,7 +779,9 @@ child_return(void *arg)
 	if (KTRPOINT(p, KTR_SYSRET)) {
 		KERNEL_PROC_LOCK(p);
 		ktrsysret(p,
-		    (p->p_flag & P_PPWAIT) ? SYS_vfork : SYS_fork, 0, 0);
+		    (p->p_flag & P_THREAD) ? SYS_rfork :
+		    (p->p_p->ps_flags & PS_PPWAIT) ? SYS_vfork : SYS_fork,
+		    0, 0);
 		KERNEL_PROC_UNLOCK(p);
 	}
 #endif

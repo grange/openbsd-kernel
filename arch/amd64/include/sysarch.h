@@ -1,21 +1,21 @@
-/*	$OpenBSD: sysarch.h,v 1.5 2010/10/26 05:49:10 guenther Exp $	*/
+/*	$OpenBSD: sysarch.h,v 1.10 2011/04/13 02:49:12 guenther Exp $	*/
 /*	$NetBSD: sysarch.h,v 1.1 2003/04/26 18:39:48 fvdl Exp $	*/
 
-#ifndef _AMD64_SYSARCH_H_
-#define _AMD64_SYSARCH_H_
+#ifndef _MACHINE_SYSARCH_H_
+#define _MACHINE_SYSARCH_H_
 
 /*
  * Architecture specific syscalls (amd64)
  */
-#define	AMD64_IOPL	2
+#define	AMD64_IOPL		2
 #define	AMD64_GET_IOPERM	3
 #define	AMD64_SET_IOPERM	4
-#define	AMD64_VM86	5
-#define	AMD64_PMC_INFO	8
-#define	AMD64_PMC_STARTSTOP 9
-#define	AMD64_PMC_READ	10
-#define AMD64_GET_MTRR   11
-#define AMD64_SET_MTRR   12
+#define	AMD64_VM86		5
+#define	AMD64_PMC_INFO		8
+#define	AMD64_PMC_STARTSTOP	9
+#define	AMD64_PMC_READ		10
+#define	AMD64_GET_FSBASE	11
+#define	AMD64_SET_FSBASE	12
 
 struct amd64_iopl_args {
 	int iopl;
@@ -62,21 +62,11 @@ struct amd64_pmc_read_args {
 	u_int64_t time;
 };
 
-struct amd64_get_mtrr_args {
-	struct mtrr *mtrrp;
-	int *n;
-};
-
-struct amd64_set_mtrr_args {
-	struct mtrr *mtrrp;
-	int *n;
-};
-
 
 #ifdef _KERNEL
 int amd64_iopl(struct proc *, void *, register_t *);
-int amd64_get_mtrr(struct proc *, void *, register_t *);
-int amd64_set_mtrr(struct proc *, void *, register_t *);
+int amd64_set_fsbase(struct proc *, void *);
+int amd64_get_fsbase(struct proc *, void *);
 #else
 int amd64_iopl(int);
 int amd64_get_ioperm(u_long *);
@@ -84,9 +74,9 @@ int amd64_set_ioperm(u_long *);
 int amd64_pmc_info(struct amd64_pmc_info_args *);
 int amd64_pmc_startstop(struct amd64_pmc_startstop_args *);
 int amd64_pmc_read(struct amd64_pmc_read_args *);
-int amd64_set_mtrr(struct mtrr *, int *);
-int amd64_get_mtrr(struct mtrr *, int *);
+int amd64_set_fsbase(void *);
+int amd64_get_fsbase(void **);
 int sysarch(int, void *);
 #endif
 
-#endif /* !_AMD64_SYSARCH_H_ */
+#endif /* !_MACHINE_SYSARCH_H_ */

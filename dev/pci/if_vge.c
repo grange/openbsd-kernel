@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_vge.c,v 1.48 2010/08/27 17:08:00 jsg Exp $	*/
+/*	$OpenBSD: if_vge.c,v 1.50 2011/04/05 18:01:21 henning Exp $	*/
 /*	$FreeBSD: if_vge.c,v 1.3 2004/09/11 22:13:25 wpaul Exp $	*/
 /*
  * Copyright (c) 2004
@@ -572,7 +572,7 @@ int
 vge_probe(struct device *dev, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, vge_devices,
-	    sizeof(vge_devices)/sizeof(vge_devices[0])));
+	    nitems(vge_devices)));
 }
 
 /*
@@ -1346,9 +1346,9 @@ vge_encap(struct vge_softc *sc, struct mbuf *m_head, int idx)
 
 	if (m_head->m_pkthdr.csum_flags & M_IPV4_CSUM_OUT)
 		vge_flags |= VGE_TDCTL_IPCSUM;
-	if (m_head->m_pkthdr.csum_flags & M_TCPV4_CSUM_OUT)
+	if (m_head->m_pkthdr.csum_flags & M_TCP_CSUM_OUT)
 		vge_flags |= VGE_TDCTL_TCPCSUM;
-	if (m_head->m_pkthdr.csum_flags & M_UDPV4_CSUM_OUT)
+	if (m_head->m_pkthdr.csum_flags & M_UDP_CSUM_OUT)
 		vge_flags |= VGE_TDCTL_UDPCSUM;
 
 	txmap = sc->vge_ldata.vge_tx_dmamap[idx];

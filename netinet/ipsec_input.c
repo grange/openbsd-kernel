@@ -1,4 +1,4 @@
-/*	$OpenBSD: ipsec_input.c,v 1.99 2010/12/21 19:16:15 markus Exp $	*/
+/*	$OpenBSD: ipsec_input.c,v 1.103 2011/04/26 22:30:38 bluhm Exp $	*/
 /*
  * The authors of this code are John Ioannidis (ji@tla.org),
  * Angelos D. Keromytis (kermit@csd.uch.gr) and
@@ -49,6 +49,7 @@
 #include <net/if.h>
 #include <net/netisr.h>
 #include <net/bpf.h>
+#include <net/route.h>
 
 #if NPF > 0
 #include <net/pfvar.h>
@@ -137,8 +138,32 @@ ipsec_common_input(struct mbuf *m, int skip, int protoff, int af, int sproto,
 	if ((sproto == IPPROTO_ESP && !esp_enable) ||
 	    (sproto == IPPROTO_AH && !ah_enable) ||
 	    (sproto == IPPROTO_IPCOMP && !ipcomp_enable)) {
-		rip_input(m, skip, sproto);
+		switch (af) {
+#ifdef INET
+		case AF_INET:
+			rip_input(m, skip, sproto);
+			break;
+#endif /* INET */
+#ifdef INET6
+		case AF_INET6:
+			rip6_input(&m, &skip, sproto);
+			break;
+#endif /* INET6 */
+		default:
+			DPRINTF(("ipsec_common_input(): unsupported protocol "
+			    "family %d\n", af));
+			m_freem(m);
+			IPSEC_ISTAT(espstat.esps_nopf, ahstat.ahs_nopf,
+			    ipcompstat.ipcomps_nopf);
+			return EPFNOSUPPORT;
+		}
 		return 0;
+	}
+	if ((sproto == IPPROTO_IPCOMP) && (m->m_flags & M_COMP)) {
+		m_freem(m);
+		ipcompstat.ipcomps_pdrops++;
+		DPRINTF(("ipsec_common_input(): repeated decompression\n"));
+		return EINVAL;
 	}
 
 	if (m->m_pkthdr.len - skip < 2 * sizeof(u_int32_t)) {
@@ -569,13 +594,15 @@ ipsec_common_input_cb(struct mbuf *m, struct tdb *tdbp, int skip, int protoff,
 		/* Check if we had authenticated ESP. */
 		if (tdbp->tdb_authalgxform)
 			m->m_flags |= M_AUTH;
-	} else if (sproto == IPPROTO_AH)
+	} else if (sproto == IPPROTO_AH) {
 		m->m_flags |= M_AUTH | M_AUTH_AH;
+	} else if (sproto == IPPROTO_IPCOMP) {
+		m->m_flags |= M_COMP;
+	}
 
 #if NPF > 0
 	/* Add pf tag if requested. */
-	if (pf_tag_packet(m, tdbp->tdb_tag, -1))
-		DPRINTF(("failed to tag ipsec packet\n"));
+	pf_tag_packet(m, tdbp->tdb_tag, -1);
 	pf_pkt_addr_changed(m);
 #endif
 

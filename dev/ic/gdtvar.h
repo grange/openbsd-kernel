@@ -1,4 +1,4 @@
-/*	$OpenBSD: gdtvar.h,v 1.17 2009/08/12 17:51:33 jsg Exp $	*/
+/*	$OpenBSD: gdtvar.h,v 1.19 2011/04/19 23:59:11 krw Exp $	*/
 
 /*
  * Copyright (c) 1999, 2000 Niklas Hallqvist.  All rights reserved.
@@ -268,7 +268,6 @@ struct gdt_softc {
 	struct	device sc_dev;
 	void   *sc_ih;
 	struct	scsi_link sc_link;	/* Virtual SCSI bus for cache devs */
-	struct	scsi_link *sc_raw_link;	/* Raw SCSI busses */
 
 	int	sc_class;		/* Controller class */
 #define GDT_ISA		0x01
@@ -297,6 +296,9 @@ struct gdt_softc {
 	TAILQ_HEAD(, gdt_ucmd) sc_ucmdq;
 	LIST_HEAD(, scsi_xfer) sc_queue;
 	struct scsi_xfer *sc_queuelast;
+
+	struct mutex		sc_ccb_mtx;
+	struct scsi_iopool	sc_iopool;
 
 	int	sc_ndevs;
 

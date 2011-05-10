@@ -1,4 +1,4 @@
-/* $OpenBSD: disksubr.c,v 1.46 2010/09/29 13:39:03 miod Exp $ */
+/* $OpenBSD: disksubr.c,v 1.50 2011/04/16 03:21:15 krw Exp $ */
 /* $NetBSD: disksubr.c,v 1.12 2002/02/19 17:09:44 wiz Exp $ */
 
 /*
@@ -98,10 +98,6 @@ int disklabel_bsd_to_om(struct disklabel *, struct sun_disklabel *);
  * secpercyl, secsize and anything required for a block i/o read
  * operation in the driver's strategy/start routines
  * must be filled in before calling us.
- *
- * Return buffer for use in signalling errors if requested.
- *
- * Returns null on success and an error string on failure.
  */
 int
 readdisklabel(dev_t dev, void (*strat)(struct buf *),
@@ -124,7 +120,8 @@ readdisklabel(dev_t dev, void (*strat)(struct buf *),
 	bp->b_blkno = LABELSECTOR;
 	bp->b_cylinder = 0;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp)) {
 		error = bp->b_error;
@@ -156,6 +153,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -176,7 +174,8 @@ writedisklabel(dev_t dev, void (*strat)(struct buf *), struct disklabel *lp)
 	bp->b_blkno = LABELSECTOR;
 	bp->b_cylinder = 0;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 
 	(*strat)(bp);
 	error = biowait(bp);
@@ -188,7 +187,8 @@ writedisklabel(dev_t dev, void (*strat)(struct buf *), struct disklabel *lp)
 	if (error)
 		goto done;
 
-	bp->b_flags = B_BUSY | B_WRITE | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_WRITE | B_RAW);
 	(*strat)(bp);
 	error = biowait(bp);
 
@@ -197,6 +197,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -222,7 +223,6 @@ sun_fstypes[8] = {
 
 /*
  * Given a UniOS/ISI disk label, set lp to a BSD disk label.
- * Returns NULL on success, else an error string.
  *
  * The BSD label is cleared out before this is called.
  */
@@ -317,7 +317,6 @@ disklabel_om_to_bsd(struct sun_disklabel *sl, struct disklabel *lp)
  * Given a BSD disk label, update the UniOS disklabel
  * pointed to by sl with the new info.  Note that the
  * UniOS disklabel may have other info we need to keep.
- * Returns zero or error code.
  */
 int
 disklabel_bsd_to_om(struct disklabel *lp, struct sun_disklabel *sl)

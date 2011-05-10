@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.73 2010/12/31 20:54:21 miod Exp $	*/
+/*	$OpenBSD: trap.c,v 1.75 2011/04/06 18:01:50 miod Exp $	*/
 /*
  * Copyright (c) 2004, Miodrag Vallat.
  * Copyright (c) 1998 Steve Murphree, Jr.
@@ -1365,7 +1365,7 @@ m88110_syscall(register_t code, struct trapframe *tf)
 		callp += code;
 
 	i = callp->sy_argsize / sizeof(register_t);
-	if (i > sizeof(args) > sizeof(register_t))
+	if (i > sizeof(args) / sizeof(register_t))
 		panic("syscall nargs");
 	if (i > nap) {
 		bcopy((caddr_t)ap, (caddr_t)args, nap * sizeof(register_t));
@@ -1520,7 +1520,9 @@ child_return(arg)
 	if (KTRPOINT(p, KTR_SYSRET)) {
 		KERNEL_PROC_LOCK(p);
 		ktrsysret(p,
-		    (p->p_flag & P_PPWAIT) ? SYS_vfork : SYS_fork, 0, 0);
+		    (p->p_flag & P_THREAD) ? SYS_rfork :
+		    (p->p_p->ps_flags & PS_PPWAIT) ? SYS_vfork : SYS_fork,
+		    0, 0);
 		KERNEL_PROC_UNLOCK(p);
 	}
 #endif

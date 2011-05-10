@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_udav.c,v 1.50 2010/12/06 04:41:39 jakemsr Exp $ */
+/*	$OpenBSD: if_udav.c,v 1.55 2011/03/31 17:06:25 mk Exp $ */
 /*	$NetBSD: if_udav.c,v 1.3 2004/04/23 17:25:25 itojun Exp $	*/
 /*	$nabe: if_udav.c,v 1.3 2003/08/21 16:57:19 nabe Exp $	*/
 /*
@@ -34,7 +34,7 @@
 /*
  * DM9601(DAVICOM USB to Ethernet MAC Controller with Integrated 10/100 PHY)
  * The spec can be found at the following url.
- *  http://www.davicom.com.tw/big5/download/Data%20Sheet/DM9601-DS-P01-930914.pdf 
+ *  http://www.meworks.net/userfile/24247/DM9601-DS-P03-102908.pdf
  */
 
 /*
@@ -312,8 +312,6 @@ udav_attach(struct device *parent, struct device *self, void *aux)
 
 	splx(s);
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, dev, &sc->sc_dev);
-
 	return;
 
  bad:
@@ -366,9 +364,6 @@ udav_detach(struct device *self, int flags)
 		       sc->sc_dev.dv_xname);
 #endif
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-			   &sc->sc_dev);
 
 	return (0);
 }
@@ -1133,18 +1128,25 @@ udav_rxeof(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 
 	usbd_get_xfer_status(xfer, NULL, NULL, &total_len, NULL);
 
+	if (total_len < UDAV_RX_HDRLEN) {
+		ifp->if_ierrors++;
+		goto done;
+	}
+	
 	h = (struct udav_rx_hdr *)c->udav_buf;
 	total_len = UGETW(h->length) - ETHER_CRC_LEN;
 	
-	DPRINTF(("%s: RX Status: 0x%02x\n", h->pktstat));
+	DPRINTF(("%s: RX Status: 0x%02x\n", sc->sc_dev.dv_xname, h->pktstat));
 
 	if (h->pktstat & UDAV_RSR_LCS) {
 		ifp->if_collisions++;
 		goto done;
 	}
 
+	/* RX status may still be correct but total_len is bogus */
 	if (total_len < sizeof(struct ether_header) ||
-	    h->pktstat & UDAV_RSR_ERR) {
+	    h->pktstat & UDAV_RSR_ERR ||
+	    total_len > UDAV_BUFSZ ) {
 		ifp->if_ierrors++;
 		goto done;
 	}

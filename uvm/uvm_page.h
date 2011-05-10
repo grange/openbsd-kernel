@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_page.h,v 1.44 2010/06/29 21:25:16 thib Exp $	*/
+/*	$OpenBSD: uvm_page.h,v 1.46 2011/05/07 15:27:01 oga Exp $	*/
 /*	$NetBSD: uvm_page.h,v 1.19 2000/12/28 08:24:55 chs Exp $	*/
 
 /* 
@@ -96,7 +96,8 @@
  */
 
 #include <uvm/uvm_extern.h>
-#include <uvm/uvm_pglist.h>
+
+TAILQ_HEAD(pglist, vm_page);
 
 struct vm_page {
 	TAILQ_ENTRY(vm_page)	pageq;		/* queue info for FIFO
@@ -251,6 +252,9 @@ void		uvm_pagewire(struct vm_page *);
 void		uvm_pagezero(struct vm_page *);
 void		uvm_pagealloc_pg(struct vm_page *, struct uvm_object *,
 		    voff_t, struct vm_anon *);
+
+struct uvm_constraint_range; /* XXX move to uvm_extern.h? */
+psize_t		uvm_pagecount(struct uvm_constraint_range*);
 
 int		uvm_page_lookup_freelist(struct vm_page *);
 

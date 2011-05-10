@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.h,v 1.117 2010/10/02 23:13:28 deraadt Exp $	*/
+/*	$OpenBSD: cpu.h,v 1.119 2011/04/22 15:48:43 kettenis Exp $	*/
 /*	$NetBSD: cpu.h,v 1.35 1996/05/05 19:29:26 christos Exp $	*/
 
 /*-
@@ -35,8 +35,8 @@
  *	@(#)cpu.h	5.4 (Berkeley) 5/9/91
  */
 
-#ifndef _I386_CPU_H_
-#define _I386_CPU_H_
+#ifndef _MACHINE_CPU_H_
+#define _MACHINE_CPU_H_
 
 /*
  * Definitions unique to i386 cpu support.
@@ -113,7 +113,6 @@ struct cpu_info {
 	paddr_t		ci_idle_pcb_paddr; /* PA of idle PCB */
 	volatile u_long	ci_flags;	/* flags; see below */
 	u_int32_t	ci_ipis; 	/* interprocessor interrupts pending */
-	int		sc_apic_version;/* local APIC version */
 
 	u_int32_t	ci_level;
 	u_int32_t	ci_vendor[4];
@@ -492,4 +491,4 @@ void	vm86_gpfault(struct proc *, int);
 #include <sys/mplock.h>
 #endif
 
-#endif /* !_I386_CPU_H_ */
+#endif /* !_MACHINE_CPU_H_ */

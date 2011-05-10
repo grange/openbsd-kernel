@@ -1,4 +1,4 @@
-/*      $OpenBSD: pmap.h,v 1.24 2010/12/26 15:40:59 miod Exp $ */
+/*      $OpenBSD: pmap.h,v 1.26 2011/04/28 20:46:30 ariane Exp $ */
 
 /*
  * Copyright (c) 1987 Carnegie-Mellon University
@@ -35,8 +35,8 @@
  *	from: @(#)pmap.h	8.1 (Berkeley) 6/10/93
  */
 
-#ifndef	_MIPS_PMAP_H_
-#define	_MIPS_PMAP_H_
+#ifndef	_MIPS64_PMAP_H_
+#define	_MIPS64_PMAP_H_
 
 #ifdef	_KERNEL
 
@@ -125,6 +125,13 @@ extern	struct pmap *const kernel_pmap_ptr;
 
 #define PMAP_PREFER(pa, va)		pmap_prefer(pa, va)
 
+extern vaddr_t CpuCacheAliasMask;	/* from mips64/mips64/cpu.c */
+/* pmap prefer alignment */
+#define PMAP_PREFER_ALIGN()						\
+	(CpuCacheAliasMask ? CpuCacheAliasMask + 1 : 0)
+/* pmap prefer offset in alignment */
+#define PMAP_PREFER_OFFSET(of)		((of) & CpuCacheAliasMask)
+
 #define	pmap_update(x)			do { /* nothing */ } while (0)
 
 void	pmap_bootstrap(void);
@@ -163,4 +170,4 @@ vm_page_t pmap_unmap_direct(vaddr_t);
 
 #endif	/* _KERNEL */
 
-#endif	/* !_MIPS_PMAP_H_ */
+#endif	/* !_MIPS64_PMAP_H_ */

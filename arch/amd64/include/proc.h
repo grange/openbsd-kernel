@@ -1,4 +1,4 @@
-/*	$OpenBSD: proc.h,v 1.4 2010/11/13 04:16:42 guenther Exp $	*/
+/*	$OpenBSD: proc.h,v 1.6 2011/03/23 16:54:34 pirofti Exp $	*/
 /*	$NetBSD: proc.h,v 1.1 2003/04/26 18:39:46 fvdl Exp $	*/
 
 /*
@@ -32,8 +32,8 @@
  *	@(#)proc.h	7.1 (Berkeley) 5/15/91
  */
 
-#ifndef _AMD64_PROC_H
-#define _AMD64_PROC_H
+#ifndef _MACHINE_PROC_H_
+#define _MACHINE_PROC_H_
 
 #include <machine/frame.h>
 
@@ -48,9 +48,6 @@ struct mdproc {
 
 /* md_flags */
 #define	MDP_USEDFPU	0x0001	/* has used the FPU */
-#define MDP_COMPAT	0x0002	/* x86 compatibility process */
-#define MDP_SYSCALL	0x0004	/* entered kernel via syscall ins */
-#define MDP_USEDMTRR	0x0008	/* has set volatile MTRRs */
-#define MDP_IRET	0x0010	/* return via iret, not sysret */
+#define MDP_IRET	0x0002	/* return via iret, not sysret */
 
-#endif /* _AMD64_PROC_H */
+#endif /* _MACHINE_PROC_H_ */

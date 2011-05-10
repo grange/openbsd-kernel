@@ -1,4 +1,4 @@
-/*	$OpenBSD: usb.c,v 1.71 2011/01/15 23:58:43 jakemsr Exp $	*/
+/*	$OpenBSD: usb.c,v 1.76 2011/04/28 07:35:15 jakemsr Exp $	*/
 /*	$NetBSD: usb.c,v 1.77 2003/01/01 00:10:26 thorpej Exp $	*/
 
 /*
@@ -60,8 +60,6 @@
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
 
-#define USB_DEV_MINOR 255
-
 #include <machine/bus.h>
 
 #include <dev/usb/usbdivar.h>
@@ -108,27 +106,11 @@ int usb_run_tasks, usb_run_abort_tasks;
 int explore_pending;
 
 void	usb_explore(void *);
-void	usb_first_explore(void *);
 void	usb_create_task_threads(void *);
 void	usb_task_thread(void *);
 struct proc *usb_task_thread_proc = NULL;
 void	usb_abort_task_thread(void *);
 struct proc *usb_abort_task_thread_proc = NULL;
-
-#define USB_MAX_EVENTS 100
-struct usb_event_q {
-	struct usb_event ue;
-	SIMPLEQ_ENTRY(usb_event_q) next;
-};
-SIMPLEQ_HEAD(, usb_event_q) usb_events =
-	SIMPLEQ_HEAD_INITIALIZER(usb_events);
-int usb_nevents = 0;
-struct selinfo usb_selevent;
-struct proc *usb_async_proc;  /* process that wants USB SIGIO */
-int usb_dev_open = 0;
-void usb_add_event(int, struct usb_event *);
-
-int usb_get_next_event(struct usb_event *);
 
 const char *usbrev_str[] = USBREV_STR;
 
@@ -164,7 +146,6 @@ usb_attach(struct device *parent, struct device *self, void *aux)
 	usbd_status err;
 	int usbrev;
 	int speed;
-	struct usb_event ue;
 
 	DPRINTF(("usbd_attach\n"));
 
@@ -201,9 +182,6 @@ usb_attach(struct device *parent, struct device *self, void *aux)
 	usb_init_task(&sc->sc_explore_task, usb_explore, sc,
 	    USB_TASK_TYPE_EXPLORE);
 
-	ue.u.ue_ctrlr.ue_bus = sc->sc_dev.dv_unit;
-	usb_add_event(USB_EVENT_CTRLR_ATTACH, &ue);
-
 	/* XXX we should have our own level */
 	sc->sc_bus->soft = softintr_establish(IPL_SOFTNET,
 	    sc->sc_bus->methods->soft_intr, sc->sc_bus);
@@ -227,7 +205,7 @@ usb_attach(struct device *parent, struct device *self, void *aux)
 #if 1
 		/*
 		 * Turning this code off will delay attachment of USB devices
-		 * until the USB event thread is running, which means that
+		 * until the USB task thread is running, which means that
 		 * the keyboard will not work until after cold boot.
 		 */
 		if (cold && (sc->sc_dev.dv_cfdata->cf_flags & 1))
@@ -246,7 +224,7 @@ usb_attach(struct device *parent, struct device *self, void *aux)
 		if (sc->sc_bus->usbrev == USBREV_2_0)
 			explore_pending++;
 		config_pending_incr();
-		kthread_create_deferred(usb_first_explore, sc);
+		usb_needs_explore(sc->sc_bus->root_hub, 1);
 	}
 }
 
@@ -296,15 +274,15 @@ usb_add_task(usbd_device_handle dev, struct usb_task *task)
 {
 	int s;
 
-	DPRINTFN(2,("%s: task=%p onqueue=%d type=%d\n", __func__, task,
-	    task->onqueue, task->type));
+	DPRINTFN(2,("%s: task=%p state=%d type=%d\n", __func__, task,
+	    task->state, task->type));
 
 	/* Don't add task if the device's root hub is dying. */
 	if (usbd_is_dying(dev))
 		return;
 
 	s = splusb();
-	if (!task->onqueue) {
+	if (!(task->state & USB_TASK_STATE_ONQ)) {
 		switch (task->type) {
 		case USB_TASK_TYPE_ABORT:
 			TAILQ_INSERT_TAIL(&usb_abort_tasks, task, next);
@@ -316,7 +294,7 @@ usb_add_task(usbd_device_handle dev, struct usb_task *task)
 			TAILQ_INSERT_TAIL(&usb_generic_tasks, task, next);
 			break;
 		}
-		task->onqueue = 1;
+		task->state |= USB_TASK_STATE_ONQ;
 		task->dev = dev;
 	}
 	if (task->type == USB_TASK_TYPE_ABORT)
@@ -331,38 +309,45 @@ usb_rem_task(usbd_device_handle dev, struct usb_task *task)
 {
 	int s;
 
-	DPRINTFN(2,("%s: task=%p onqueue=%d type=%d\n", __func__, task,
-	    task->onqueue, task->type));
+	DPRINTFN(2,("%s: task=%p state=%d type=%d\n", __func__, task,
+	    task->state, task->type));
+
+	if (!(task->state & USB_TASK_STATE_ONQ))
+		return;
 
 	s = splusb();
-	if (task->onqueue) {
-		switch (task->type) {
-		case USB_TASK_TYPE_ABORT:
-			TAILQ_REMOVE(&usb_abort_tasks, task, next);
-			break;
-		case USB_TASK_TYPE_EXPLORE:
-			TAILQ_REMOVE(&usb_explore_tasks, task, next);
-			break;
-		case USB_TASK_TYPE_GENERIC:
-			TAILQ_REMOVE(&usb_generic_tasks, task, next);
-			break;
-		}
-		task->onqueue = 0;
+
+	switch (task->type) {
+	case USB_TASK_TYPE_ABORT:
+		TAILQ_REMOVE(&usb_abort_tasks, task, next);
+		break;
+	case USB_TASK_TYPE_EXPLORE:
+		TAILQ_REMOVE(&usb_explore_tasks, task, next);
+		break;
+	case USB_TASK_TYPE_GENERIC:
+		TAILQ_REMOVE(&usb_generic_tasks, task, next);
+		break;
 	}
+	task->state &= ~USB_TASK_STATE_ONQ;
+	if (task->state == USB_TASK_STATE_NONE)
+		wakeup(task);
+
 	splx(s);
 }
 
 void
-usb_rem_wait_task(usbd_device_handle dev, struct usb_task *task)
+usb_wait_task(usbd_device_handle dev, struct usb_task *task)
 {
 	int s;
 
-	DPRINTFN(2,("%s: task=%p onqueue=%d type=%d\n", __func__, task,
-	    task->onqueue, task->type));
+	DPRINTFN(2,("%s: task=%p state=%d type=%d\n", __func__, task,
+	    task->state, task->type));
+
+	if (task->state == USB_TASK_STATE_NONE)
+		return;
 
 	s = splusb();
-	usb_rem_task(dev, task);
-	while (task->running) {
+	while (task->state != USB_TASK_STATE_NONE) {
 		DPRINTF(("%s: waiting for task to complete\n", __func__));
 		tsleep(task, PWAIT, "endtask", 0);
 	}
@@ -370,43 +355,10 @@ usb_rem_wait_task(usbd_device_handle dev, struct usb_task *task)
 }
 
 void
-usb_first_explore(void *arg)
+usb_rem_wait_task(usbd_device_handle dev, struct usb_task *task)
 {
-	struct usb_softc *sc = arg;
-	struct timeval now, waited;
-	int pwrdly, waited_ms;
-
-	getmicrouptime(&now);
-	timersub(&now, &sc->sc_ptime, &waited);
-	waited_ms = waited.tv_sec * 1000 + waited.tv_usec / 1000;
-
-	/* Wait for power to come good. */
-	pwrdly = sc->sc_bus->root_hub->hub->hubdesc.bPwrOn2PwrGood * 
-	    UHD_PWRON_FACTOR + USB_EXTRA_POWER_UP_TIME;
-	if (pwrdly > waited_ms)
-		usb_delay_ms(sc->sc_bus, pwrdly - waited_ms);
-
-	/*
-	 * USB1 waits for USB2 to finish their first probe.
-	 * We only really need to have "companion" USB1 controllers
-	 * wait, but it's hard to determine what's a companion and
-	 * what isn't.
-	 */
-	while (sc->sc_bus->usbrev != USBREV_2_0 && explore_pending)
-		(void)tsleep((void *)&explore_pending, PWAIT, "config", 0);
-
-	/*
-	 * Add first explore task to the queue.  The tasks are run in order
-	 * in a single thread, so adding tasks to the queue in the correct
-	 * order means they will run in the correct order.
-	 */
-	usb_needs_explore(sc->sc_bus->root_hub, 1);
-
-	/* Wake up any companions waiting for handover before their probes. */
-	if (sc->sc_bus->usbrev == USBREV_2_0) {
-		explore_pending--;
-		wakeup((void *)&explore_pending);
- 	}
+	usb_rem_task(dev, task);
+	usb_wait_task(dev, task);
 }
 
 void
@@ -427,16 +379,23 @@ usb_task_thread(void *arg)
 			tsleep(&usb_run_tasks, PWAIT, "usbtsk", 0);
 			continue;
 		}
-		task->onqueue = 0;
-		/* Don't execute the task if the root hub is gone. */
-		if (usbd_is_dying(task->dev))
-			continue;
-		task->running = 1;
-		splx(s);
-		task->fun(task->arg);
-		s = splusb();
-		task->running = 0;
-		wakeup(task);
+		/*
+		 * Set the state run bit before clearing the onq bit.
+		 * This avoids state == none between dequeue and
+		 * execution, which could cause usb_wait_task() to do
+		 * the wrong thing.
+		 */
+		task->state |= USB_TASK_STATE_RUN;
+		task->state &= ~USB_TASK_STATE_ONQ;
+		/* Don't actually execute the task if dying. */
+		if (!usbd_is_dying(task->dev)) {
+			splx(s);
+			task->fun(task->arg);
+			s = splusb();
+		}
+		task->state &= ~USB_TASK_STATE_RUN;
+		if (task->state == USB_TASK_STATE_NONE)
+			wakeup(task);
 	}
 	splx(s);
 
@@ -464,16 +423,23 @@ usb_abort_task_thread(void *arg)
 			tsleep(&usb_run_abort_tasks, PWAIT, "usbatsk", 0);
 			continue;
 		}
-		task->onqueue = 0;
-		/* Don't execute the task if the root hub is gone. */
-		if (usbd_is_dying(task->dev))
-			continue;
-		task->running = 1;
-		splx(s);
-		task->fun(task->arg);
-		s = splusb();
-		task->running = 0;
-		wakeup(task);
+		/*
+		 * Set the state run bit before clearing the onq bit.
+		 * This avoids state == none between dequeue and
+		 * execution, which could cause usb_wait_task() to do
+		 * the wrong thing.
+		 */
+		task->state |= USB_TASK_STATE_RUN;
+		task->state &= ~USB_TASK_STATE_ONQ;
+		/* Don't actually execute the task if dying. */
+		if (!usbd_is_dying(task->dev)) {
+			splx(s);
+			task->fun(task->arg);
+			s = splusb();
+		}
+		task->state &= ~USB_TASK_STATE_RUN;
+		if (task->state == USB_TASK_STATE_NONE)
+			wakeup(task);
 	}
 	splx(s);
 
@@ -496,14 +462,6 @@ usbopen(dev_t dev, int flag, int mode, struct proc *p)
 	int unit = minor(dev);
 	struct usb_softc *sc;
 
-	if (unit == USB_DEV_MINOR) {
-		if (usb_dev_open)
-			return (EBUSY);
-		usb_dev_open = 1;
-		usb_async_proc = 0;
-		return (0);
-	}
-
 	if (unit >= usb_cd.cd_ndevs)
 		return (ENXIO);
 	sc = usb_cd.cd_devs[unit];
@@ -517,49 +475,29 @@ usbopen(dev_t dev, int flag, int mode, struct proc *p)
 }
 
 int
-usbread(dev_t dev, struct uio *uio, int flag)
-{
-	struct usb_event ue;
-	int s, error, n;
-
-	if (minor(dev) != USB_DEV_MINOR)
-		return (ENXIO);
-
-	if (uio->uio_resid != sizeof(struct usb_event))
-		return (EINVAL);
-
-	error = 0;
-	s = splusb();
-	for (;;) {
-		n = usb_get_next_event(&ue);
-		if (n != 0)
-			break;
-		if (flag & IO_NDELAY) {
-			error = EWOULDBLOCK;
-			break;
-		}
-		error = tsleep(&usb_events, PZERO | PCATCH, "usbrea", 0);
-		if (error)
-			break;
-	}
-	splx(s);
-	if (!error)
-		error = uiomove((void *)&ue, uio->uio_resid, uio);
-
-	return (error);
-}
-
-int
 usbclose(dev_t dev, int flag, int mode, struct proc *p)
 {
-	int unit = minor(dev);
-
-	if (unit == USB_DEV_MINOR) {
-		usb_async_proc = 0;
-		usb_dev_open = 0;
-	}
-
 	return (0);
+}
+
+void
+usbd_fill_di_task(void *arg)
+{
+	struct usb_device_info *di = (struct usb_device_info *)arg;
+	struct usb_softc *sc;
+	usbd_device_handle dev;
+
+	/* check that the bus and device are still present */
+	if (di->udi_bus >= usb_cd.cd_ndevs)
+		return;
+	sc = usb_cd.cd_devs[di->udi_bus];
+	if (sc == NULL)
+		return;
+	dev = sc->sc_bus->devices[di->udi_addr];
+	if (dev == NULL)
+		return;
+
+	usbd_fill_deviceinfo(dev, di, 1);
 }
 
 int
@@ -568,24 +506,6 @@ usbioctl(dev_t devt, u_long cmd, caddr_t data, int flag, struct proc *p)
 	struct usb_softc *sc;
 	int unit = minor(devt);
 	int error;
-
-	if (unit == USB_DEV_MINOR) {
-		switch (cmd) {
-		case FIONBIO:
-			/* All handled in the upper FS layer. */
-			return (0);
-
-		case FIOASYNC:
-			if (*(int *)data)
-				usb_async_proc = p;
-			else
-				usb_async_proc = 0;
-			return (0);
-
-		default:
-			return (EINVAL);
-		}
-	}
 
 	sc = usb_cd.cd_devs[unit];
 
@@ -676,14 +596,31 @@ usbioctl(dev_t devt, u_long cmd, caddr_t data, int flag, struct proc *p)
 	{
 		struct usb_device_info *di = (void *)data;
 		int addr = di->udi_addr;
+		struct usb_task di_task;
 		usbd_device_handle dev;
 
 		if (addr < 1 || addr >= USB_MAX_DEVICES)
 			return (EINVAL);
+
 		dev = sc->sc_bus->devices[addr];
 		if (dev == NULL)
 			return (ENXIO);
-		usbd_fill_deviceinfo(dev, di, 1);
+
+		di->udi_bus = unit;
+
+		/* All devices get a driver, thanks to ugen(4).  If the
+		 * task ends without adding a driver name, there was an error.
+		 */
+		di->udi_devnames[0][0] = '\0';
+
+		usb_init_task(&di_task, usbd_fill_di_task, di,
+		    USB_TASK_TYPE_GENERIC);
+		usb_add_task(sc->sc_bus->root_hub, &di_task);
+		usb_wait_task(sc->sc_bus->root_hub, &di_task);
+
+		if (di->udi_devnames[0][0] == '\0')
+			return (ENXIO);
+
 		break;
 	}
 
@@ -717,83 +654,6 @@ usbioctl(dev_t devt, u_long cmd, caddr_t data, int flag, struct proc *p)
 	return (0);
 }
 
-int
-usbpoll(dev_t dev, int events, struct proc *p)
-{
-	int revents, mask, s;
-
-	if (minor(dev) == USB_DEV_MINOR) {
-		revents = 0;
-		mask = POLLIN | POLLRDNORM;
-
-		s = splusb();
-		if (events & mask && usb_nevents > 0)
-			revents |= events & mask;
-		if (revents == 0 && events & mask)
-			selrecord(p, &usb_selevent);
-		splx(s);
-
-		return (revents);
-	} else {
-		return (POLLERR);
-	}
-}
-
-void filt_usbrdetach(struct knote *);
-int filt_usbread(struct knote *, long);
-int usbkqfilter(dev_t, struct knote *);
-
-void
-filt_usbrdetach(struct knote *kn)
-{
-	int s;
-
-	s = splusb();
-	SLIST_REMOVE(&usb_selevent.si_note, kn, knote, kn_selnext);
-	splx(s);
-}
-
-int
-filt_usbread(struct knote *kn, long hint)
-{
-
-	if (usb_nevents == 0)
-		return (0);
-
-	kn->kn_data = sizeof(struct usb_event);
-	return (1);
-}
-
-struct filterops usbread_filtops =
-	{ 1, NULL, filt_usbrdetach, filt_usbread };
-
-int
-usbkqfilter(dev_t dev, struct knote *kn)
-{
-	struct klist *klist;
-	int s;
-
-	switch (kn->kn_filter) {
-	case EVFILT_READ:
-		if (minor(dev) != USB_DEV_MINOR)
-			return (1);
-		klist = &usb_selevent.si_note;
-		kn->kn_fop = &usbread_filtops;
-		break;
-
-	default:
-		return (1);
-	}
-
-	kn->kn_hook = NULL;
-
-	s = splusb();
-	SLIST_INSERT_HEAD(klist, kn, kn_selnext);
-	splx(s);
-
-	return (0);
-}
-
 /*
  * Explore device tree from the root.  We need mutual exclusion to this
  * hub while traversing the device tree, but this is guaranteed since this
@@ -805,6 +665,8 @@ void
 usb_explore(void *v)
 {
 	struct usb_softc *sc = v;
+	struct timeval now, waited;
+	int pwrdly, waited_ms;
 
 	DPRINTFN(2,("%s: %s\n", __func__, sc->sc_dev.dv_xname));
 #ifdef USB_DEBUG
@@ -812,12 +674,41 @@ usb_explore(void *v)
 		return;
 #endif
 
-	if (!sc->sc_bus->dying)
-		sc->sc_bus->root_hub->hub->explore(sc->sc_bus->root_hub);
+	if (sc->sc_bus->dying)
+		return;
+
+	if (sc->sc_bus->flags & USB_BUS_CONFIG_PENDING) {
+		/*
+		 * If this is a low/full speed hub and there is a high
+		 * speed hub that hasn't explored yet, reshedule this
+		 * task, allowing the high speed explore task to run.
+		 */
+		if (sc->sc_bus->usbrev < USBREV_2_0 && explore_pending > 0) {
+			usb_add_task(sc->sc_bus->root_hub,
+			    &sc->sc_explore_task);
+			return;
+		}
+
+		/*
+		 * Wait for power to stabilize.
+		 */
+		getmicrouptime(&now);
+		timersub(&now, &sc->sc_ptime, &waited);
+		waited_ms = waited.tv_sec * 1000 + waited.tv_usec / 1000;
+
+		pwrdly = sc->sc_bus->root_hub->hub->hubdesc.bPwrOn2PwrGood * 
+		    UHD_PWRON_FACTOR + USB_EXTRA_POWER_UP_TIME;
+		if (pwrdly > waited_ms)
+			usb_delay_ms(sc->sc_bus, pwrdly - waited_ms);
+	}
+
+	sc->sc_bus->root_hub->hub->explore(sc->sc_bus->root_hub);
 
 	if (sc->sc_bus->flags & USB_BUS_CONFIG_PENDING) {
 		DPRINTF(("%s: %s: first explore done\n", __func__,
 		    sc->sc_dev.dv_xname));
+		if (sc->sc_bus->usbrev == USBREV_2_0 && explore_pending)
+			explore_pending--;
 		config_pending_decr();
 		sc->sc_bus->flags &= ~(USB_BUS_CONFIG_PENDING);
 	}
@@ -844,78 +735,6 @@ usb_needs_reattach(usbd_device_handle dev)
 	DPRINTFN(2,("usb_needs_reattach\n"));
 	dev->powersrc->reattach = 1;
 	usb_needs_explore(dev, 0);
-}
-
-/* Called at splusb() */
-int
-usb_get_next_event(struct usb_event *ue)
-{
-	struct usb_event_q *ueq;
-
-	if (usb_nevents <= 0)
-		return (0);
-	ueq = SIMPLEQ_FIRST(&usb_events);
-#ifdef DIAGNOSTIC
-	if (ueq == NULL) {
-		printf("usb: usb_nevents got out of sync! %d\n", usb_nevents);
-		usb_nevents = 0;
-		return (0);
-	}
-#endif
-	*ue = ueq->ue;
-	SIMPLEQ_REMOVE_HEAD(&usb_events, next);
-	free(ueq, M_USBDEV);
-	usb_nevents--;
-	return (1);
-}
-
-void
-usbd_add_dev_event(int type, usbd_device_handle udev)
-{
-	struct usb_event ue;
-
-	usbd_fill_deviceinfo(udev, &ue.u.ue_device, USB_EVENT_IS_ATTACH(type));
-	usb_add_event(type, &ue);
-}
-
-void
-usbd_add_drv_event(int type, usbd_device_handle udev, struct device *dev)
-{
-	struct usb_event ue;
-
-	ue.u.ue_driver.ue_cookie = udev->cookie;
-	strncpy(ue.u.ue_driver.ue_devname, dev->dv_xname,
-	    sizeof ue.u.ue_driver.ue_devname);
-	usb_add_event(type, &ue);
-}
-
-void
-usb_add_event(int type, struct usb_event *uep)
-{
-	struct usb_event_q *ueq;
-	struct usb_event ue;
-	struct timespec thetime;
-	int s;
-
-	nanotime(&thetime);
-	/* Don't want to wait here inside splusb() */
-	ueq = malloc(sizeof *ueq, M_USBDEV, M_WAITOK);
-	ueq->ue = *uep;
-	ueq->ue.ue_type = type;
-	ueq->ue.ue_time = thetime;
-
-	s = splusb();
-	if (++usb_nevents >= USB_MAX_EVENTS) {
-		/* Too many queued events, drop an old one. */
-		DPRINTFN(-1,("usb: event dropped\n"));
-		(void)usb_get_next_event(&ue);
-	}
-	SIMPLEQ_INSERT_TAIL(&usb_events, ueq, next);
-	wakeup(&usb_events);
-	selwakeup(&usb_selevent);
-	if (usb_async_proc != NULL)
-		psignal(usb_async_proc, SIGIO);
-	splx(s);
 }
 
 void
@@ -959,7 +778,6 @@ int
 usb_detach(struct device *self, int flags)
 {
 	struct usb_softc *sc = (struct usb_softc *)self;
-	struct usb_event ue;
 
 	DPRINTF(("usb_detach: start\n"));
 
@@ -979,9 +797,6 @@ usb_detach(struct device *self, int flags)
 		softintr_disestablish(sc->sc_bus->soft);
 		sc->sc_bus->soft = NULL;
 	}
-
-	ue.u.ue_ctrlr.ue_bus = sc->sc_dev.dv_unit;
-	usb_add_event(USB_EVENT_CTRLR_DETACH, &ue);
 
 	return (0);
 }

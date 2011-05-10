@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.71 2010/09/20 06:33:47 matthew Exp $ */
+/*	$OpenBSD: trap.c,v 1.73 2011/04/18 21:44:55 guenther Exp $ */
 
 /*
  * Copyright (c) 1995 Theo de Raadt

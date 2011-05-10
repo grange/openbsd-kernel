@@ -1,4 +1,4 @@
-#	$OpenBSD: GENERIC,v 1.708 2011/01/15 04:39:27 kevlo Exp $
+#	$OpenBSD: GENERIC,v 1.713 2011/04/10 20:27:02 shadchin Exp $
 #
 # For further information on compiling OpenBSD kernels, see the config(8)
 # man page.
@@ -25,7 +25,6 @@ option		APERTURE	# in-kernel aperture driver for XFree86
 
 option		COMPAT_SVR4	# binary compatibility with SVR4
 option		COMPAT_LINUX	# binary compatibility with Linux
-option		COMPAT_FREEBSD	# binary compatibility with FreeBSD
 option		COMPAT_AOUT	# a.out binaries are emulated
 
 option		PROCFS		# /proc
@@ -124,7 +123,7 @@ alipm*	at pci?				# Acer Labs M7101 power management
 iic*	at alipm?
 ichiic*	at pci?				# Intel ICH SMBus controller
 iic*	at ichiic?
-viapm*	at pci?				# VIA VT8237 power management
+viapm*	at pci?				# VIA SMBus controller
 iic*	at viapm?
 amdiic*	at pci?				# AMD-8111 SMBus controller
 iic*	at amdiic?
@@ -142,7 +141,6 @@ schsio*	at isa? port 0x4e
 schsio*	at isa? port 0x162e
 schsio*	at isa? port 0x164e
 
-viaenv*	at pci?				# VIA VT82C686A hardware monitor
 viasio*	at isa? port 0x2e flags 0x0000	# VIA VT1211 LPC Super I/O
 viasio*	at isa? port 0x4e flags 0x0000
 wbsio*	at isa? port 0x2e		# Winbond LPC Super I/O
@@ -322,9 +320,9 @@ sdmmc*	at sdhc?		# SD/MMC bus
 scsibus* at sdmmc?		# SCSI emulation
 
 # Bluetooth controllers
-sbt*	at sdmmc?		# SDIO Bluetooth
+sbt*	at sdmmc? disable	# SDIO Bluetooth
 bthub*	at sbt?
-ubt*	at uhub?		# USB Bluetooth
+ubt*	at uhub? disable	# USB Bluetooth
 bthub*	at ubt?
 bthidev* at bthub?		# Bluetooth HID support
 btkbd*	at bthidev?
@@ -622,7 +620,7 @@ re*	at cardbus?			# Realtek 8169/8169S/8110S
 stge*	at pci?				# Sundance TC9021 GigE
 lge*	at pci?				# Level1 LXT1001 GigE
 hme*	at pci?				# Sun Happy Meal
-#bce*	at pci?				# Broadcom BCM4401
+bce*	at pci?				# Broadcom BCM4401
 vge*	at pci?				# VIA VT612x
 nfe*	at pci?				# NVIDIA nForce Ethernet
 musycc*	at pci?				# Conexant HDLC controller
@@ -704,6 +702,7 @@ jmphy*	at mii?				# JMicron JMP202/JMP211 PHYs
 atphy*	at mii?				# Attansic F1 PHYs
 rdcphy*	at mii?				# RDC R6040 PHY
 ipgphy*	at mii?				# IC Plus IP1000A PHYs
+mlphy*	at mii?				# Micro Linear 6692 PHY
 ukphy*	at mii?				# "unknown" PHYs
 
 pss0	at isa? port 0x220 irq 7 drq 6	# Personal Sound System

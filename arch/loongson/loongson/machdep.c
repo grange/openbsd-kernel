@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.24 2010/10/24 15:40:03 miod Exp $ */
+/*	$OpenBSD: machdep.c,v 1.27 2011/03/31 20:37:44 miod Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Miodrag Vallat.
@@ -97,7 +97,7 @@ int	bufcachepercent = BUFCACHEPERCENT;
 /*
  * Even though the system is 64bit, the hardware is constrained to up
  * to 2G of contigous physical memory (direct 2GB DMA area), so there
- * is no particular constraint. paddr_t is long so: 
+ * is no particular constraint. paddr_t is long so:
  */
 struct uvm_constraint_range  dma_constraint = { 0x0, 0xffffffffUL };
 struct uvm_constraint_range *uvm_md_constraints[] = { NULL };
@@ -172,6 +172,7 @@ extern const struct platform yeeloong_platform;
 
 const struct bonito_flavour bonito_flavours[] = {
 	/* Lemote Fuloong 2F mini-PC */
+	{ "LM6002",	&fuloong_platform }, /* dual Ethernet, no prefix */
 	{ "LM6003",	&fuloong_platform },
 	{ "LM6004",	&fuloong_platform },
 	/* EMTEC Gdium Liberty 1000 */
@@ -274,7 +275,20 @@ mips_init(int32_t argc, int32_t argv, int32_t envp, int32_t cv,
 	prid = cp0_get_prid();
 	switch ((prid >> 8) & 0xff) {
 	case MIPS_LOONGSON2:
-		loongson_ver = 0x2c + (prid & 0xff);
+		switch (prid & 0xff) {
+		case 0x00:
+			loongson_ver = 0x2c;
+			break;
+		case 0x02:
+			loongson_ver = 0x2e;
+			break;
+		case 0x03:
+			loongson_ver = 0x2f;
+			break;
+		case 0x05:
+			loongson_ver = 0x3a;
+			break;
+		}
 		if (loongson_ver == 0x2e || loongson_ver == 0x2f)
 			break;
 		/* FALLTHROUGH */
@@ -309,6 +323,31 @@ mips_init(int32_t argc, int32_t argv, int32_t envp, int32_t cv,
 				sys_platform = f->platform;
 				break;
 			}
+
+		if (sys_platform == NULL) {
+			/*
+			 * Early Lemote designs shipped without a model prefix.
+			 * Hopefully these well be close enough to the first
+			 * generation Fuloong 2F design (LM6002); let's warn
+			 * the user and try this if version is 1.2.something
+			 * (1.3 onwards are expected to have a model prefix,
+			 *  and there are currently no reports of 1.1 and
+			 *  below being 2F systems).
+			 *
+			 * Note that this could be handled by adding a
+			 * "1.2." machine type entry to the flavours table,
+			 * but I prefer have it stand out.
+			 * LM6002 users are encouraged to add the system
+			 * model prefix to the `Version' variable.
+			 */
+			if (strncmp(envvar, "1.2.", 4) == 0) {
+				pmon_printf("No model prefix in version"
+				    " string \"%s\".\n"
+				    "Attempting to match as Lemote Fuloong\n",
+				    envvar);
+				sys_platform = &fuloong_platform;
+			}
+		}
 
 		if (sys_platform == NULL) {
 			pmon_printf("This kernel doesn't support model \"%s\"."
@@ -363,7 +402,8 @@ mips_init(int32_t argc, int32_t argv, int32_t envp, int32_t cv,
 		goto unsupported;
 	}
 
-	if (memlo == 256) {
+	/* 3A PMON only reports up to 240MB as low memory */
+	if (memlo >= 240) {
 		envvar = pmon_getenv("highmemsize");
 		if (envvar == NULL)
 			memhi = 0;
@@ -386,6 +426,7 @@ mips_init(int32_t argc, int32_t argv, int32_t envp, int32_t cv,
 		break;
 	default:
 	case 0x2f:
+	case 0x3a:
 		loongson2f_setup(memlo, memhi);
 		break;
 	}
@@ -473,10 +514,40 @@ mips_init(int32_t argc, int32_t argv, int32_t envp, int32_t cv,
 	printf("Initial setup done, switching console.\n");
 
 	/*
-	 * Init message buffer.
+	 * Init message buffer. This is similar to pmap_steal_memory(), but
+	 * without zeroing the area, to keep the message buffer from the
+	 * previous kernel run intact, if any.
 	 */
+	for (i = 0; i < vm_nphysseg; i++) {
+		struct vm_physseg *vps = &vm_physmem[i];
+		uint npg = atop(round_page(MSGBUFSIZE));
+		int j;
 
-	msgbufbase = (caddr_t)pmap_steal_memory(MSGBUFSIZE, NULL,NULL);
+		if (vps->avail_start != vps->start ||
+		    vps->avail_start >= vps->avail_end) {
+			continue;
+		}
+
+		if ((vps->avail_end - vps->avail_start) < npg)
+			continue;
+
+		msgbufbase = (caddr_t)PHYS_TO_XKPHYS(ptoa(vps->avail_start),
+		    CCA_CACHED);
+		vps->avail_start += npg;
+		vps->start += npg;
+
+		if (vps->avail_start == vps->end) {
+			/* don't bother panicing if nphysseg becomes zero, */
+			/* the next pmap_steal_memory() call will. */
+			vm_nphysseg--;
+			for (j = i; j < vm_nphysseg; j++)
+				vm_physmem[j] = vm_physmem[j + 1];
+		}
+
+		break;
+	}
+	if (msgbufbase == NULL)
+		panic("not enough contiguous memory for message buffer");
 	initmsgbuf(msgbufbase, MSGBUFSIZE);
 
 	/*
@@ -626,7 +697,7 @@ consinit()
 }
 
 /*
- * cpu_startup: allocate memory for variable-sized tables, initialize CPU, and 
+ * cpu_startup: allocate memory for variable-sized tables, initialize CPU, and
  * do auto-configuration.
  */
 void
@@ -799,7 +870,7 @@ dumpconf(void)
 		dumplo = nblks - btodb(ptoa(physmem));
 
 	/*
-	 * Don't dump on the first page in case the dump device includes a 
+	 * Don't dump on the first page in case the dump device includes a
 	 * disk label.
 	 */
 	if (dumplo < btodb(PAGE_SIZE))

@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.13 2011/01/02 13:16:53 jsing Exp $	*/
+/*	$OpenBSD: trap.c,v 1.19 2011/04/16 22:02:32 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2005 Michael Shalayeff
@@ -33,6 +33,7 @@
 #include <uvm/uvm.h>
 
 #include <machine/autoconf.h>
+#include <machine/cpufunc.h>
 #include <machine/psl.h>
 
 #ifdef DDB
@@ -161,11 +162,8 @@ userret(struct proc *p, register_t pc, u_quad_t oticks)
 }
 
 void
-trap(type, frame)
-	int type;
-	struct trapframe *frame;
+trap(int type, struct trapframe *frame)
 {
-	extern int cpl;	/* from locore.o */
 	struct proc *p = curproc;
 	vaddr_t va;
 	struct vm_map *map;
@@ -178,8 +176,9 @@ trap(type, frame)
 	const char *tts;
 	vm_fault_t fault = VM_FAULT_INVALID;
 #ifdef DIAGNOSTIC
-	long oldcpl;
+	long oldcpl = curcpu()->ci_cpl;
 #endif
+	u_long mask;
 
 	trapnum = type & ~T_USER;
 	opcode = frame->tf_iir;
@@ -228,7 +227,8 @@ trap(type, frame)
 #endif
 	if (trapnum != T_INTERRUPT) {
 		uvmexp.traps++;
-	/* TODO	mtctl(frame->tf_eiem, CR_EIEM); */
+		mtctl(frame->tf_eiem, CR_EIEM);
+	        ssm(PSL_I, mask);
 	}
 
 	switch (type) {
@@ -283,9 +283,13 @@ trap(type, frame)
 		break;
 
 	case T_EXCEPTION | T_USER: {
-		u_int64_t *fpp = (u_int64_t *)frame->tf_cr30;
+		struct hppa_fpstate *hfp;
+		u_int64_t *fpp;
 		u_int32_t *pex;
 		int i, flt;
+
+		hfp = (struct hppa_fpstate *)frame->tf_cr30;
+		fpp = (u_int64_t *)&hfp->hfp_regs;
 
 		pex = (u_int32_t *)&fpp[0];
 		for (i = 0, pex++; i < 7 && !*pex; i++, pex++);
@@ -482,8 +486,7 @@ printf("here\n");
 
 	case T_INTERRUPT:
 	case T_INTERRUPT | T_USER:
-/*		cpu_intr(frame); */
-printf("eirr 0x%08x\n", mfctl(CR_EIRR));
+		cpu_intr(frame);
 		break;
 
 	case T_CONDITION:
@@ -521,21 +524,21 @@ printf("eirr 0x%08x\n", mfctl(CR_EIRR));
 		}
 		/* FALLTHROUGH to unimplemented */
 	default:
-#if 1
-if (kdb_trap (type, va, frame))
-	return;
+#ifdef TRAPDEBUG
+		if (kdb_trap(type, va, frame))
+			return;
 #endif
 		panic("trap: unimplemented \'%s\' (%d)", tts, trapnum);
 	}
 
 #ifdef DIAGNOSTIC
-	if (cpl != oldcpl)
+	if (curcpu()->ci_cpl != oldcpl)
 		printf("WARNING: SPL (%d) NOT LOWERED ON "
-		    "TRAP (%d) EXIT\n", cpl, trapnum);
+		    "TRAP (%d) EXIT\n", curcpu()->ci_cpl, trapnum);
 #endif
 
 	if (trapnum != T_INTERRUPT)
-		splx(cpl);	/* process softints */
+		splx(curcpu()->ci_cpl);	/* process softints */
 
 	/*
 	 * in case we were interrupted from the syscall gate page
@@ -549,8 +552,7 @@ if (kdb_trap (type, va, frame))
 }
 
 void
-child_return(arg)
-	void *arg;
+child_return(void *arg)
 {
 	struct proc *p = (struct proc *)arg;
 	struct trapframe *tf = p->p_md.md_regs;
@@ -566,7 +568,9 @@ child_return(arg)
 #ifdef KTRACE
 	if (KTRPOINT(p, KTR_SYSRET))
 		ktrsysret(p,
-		    (p->p_flag & P_PPWAIT) ? SYS_vfork : SYS_fork, 0, 0);
+		    (p->p_flag & P_THREAD) ? SYS_rfork :
+		    (p->p_p->ps_flags & PS_PPWAIT) ? SYS_vfork : SYS_fork,
+		    0, 0);
 #endif
 }
 
@@ -578,13 +582,12 @@ void	syscall(struct trapframe *frame);
 void
 syscall(struct trapframe *frame)
 {
-	extern int cpl;	/* from locore.o */
 	register struct proc *p = curproc;
 	register const struct sysent *callp;
 	int retq, nsys, code, argsize, argoff, oerror, error;
 	register_t args[8], rval[2];
 #ifdef DIAGNOSTIC
-	long oldcpl;
+	long oldcpl = curcpu()->ci_cpl;
 #endif
 
 	/* TODO syscall */
@@ -720,12 +723,13 @@ syscall(struct trapframe *frame)
 		ktrsysret(p, code, oerror, rval[0]);
 #endif
 #ifdef DIAGNOSTIC
-	if (cpl != oldcpl) {
+	if (curcpu()->ci_cpl != oldcpl) {
 		printf("WARNING: SPL (0x%x) NOT LOWERED ON "
 		    "syscall(0x%x, 0x%x, 0x%x, 0x%x...) EXIT, PID %d\n",
-		    cpl, code, args[0], args[1], args[2], p->p_pid);
-		cpl = oldcpl;
+		    curcpu()->ci_cpl, code, args[0], args[1], args[2],
+		    p->p_pid);
+		curcpu()->ci_cpl = oldcpl;
 	}
 #endif
-	splx(cpl);	/* process softints */
+	splx(curcpu()->ci_cpl);	/* process softints */
 }

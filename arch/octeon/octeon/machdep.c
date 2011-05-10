@@ -1,4 +1,4 @@
-/*	$OpenBSD: machdep.c,v 1.7 2010/11/28 20:53:41 syuu Exp $ */
+/*	$OpenBSD: machdep.c,v 1.11 2011/05/08 20:49:19 syuu Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Miodrag Vallat.
@@ -77,7 +77,7 @@
 
 #include <mips64/archtype.h>
 
-#include <octeon/dev/obiovar.h>
+#include <octeon/dev/iobusvar.h>
 #include <octeon/dev/octeonreg.h>
 
 struct boot_desc {
@@ -206,8 +206,8 @@ vaddr_t	mips_init(__register_t, __register_t, __register_t, __register_t);
 boolean_t is_memory_range(paddr_t, psize_t, psize_t);
 void	octeon_memory_init(struct boot_info *);
 
-cons_decl(com_oct);
-struct consdev octcons = cons_init(com_oct);
+cons_decl(cn30xxuart);
+struct consdev uartcons = cons_init(cn30xxuart);
 
 #define btoc(x) (((x)+PAGE_MASK)>>PAGE_SHIFT)
 
@@ -273,26 +273,28 @@ octeon_memory_init(struct boot_info *boot_info)
 
 	if (boot_info->board_type != BOARD_TYPE_SIM) {
 		if(realmem_bytes > OCTEON_DRAM_FIRST_256_END){
-#if 0
+#if 0 /* XXX: need fix on mips64 pmap code */
 			/* take out the upper non-cached 1/2 */
 			phys_avail[2] = 0x410000000ULL;
 			phys_avail[3] = (0x410000000ULL 
 					 + OCTEON_DRAM_FIRST_256_END);
 			physmem += btoc(phys_avail[3] - phys_avail[2]);
-			mem_layout[1].mem_first_page = atop(phys_avail[2]);
-			mem_layout[1].mem_last_page = atop(phys_avail[3]-1);
-			mem_layout[1].mem_freelist = VM_FREELIST_DEFAULT;
-			realmem_bytes -= OCTEON_DRAM_FIRST_256_END;
+			mem_layout[2].mem_first_page = atop(phys_avail[2]);
+			mem_layout[2].mem_last_page = atop(phys_avail[3]-1);
+			mem_layout[2].mem_freelist = VM_FREELIST_DEFAULT;
 #endif
+			realmem_bytes -= OCTEON_DRAM_FIRST_256_END;
+
 			/* Now map the rest of the memory */
 			phys_avail[4] = 0x20000000ULL;
 			phys_avail[5] = (0x20000000ULL + realmem_bytes);
 			physmem += btoc(phys_avail[5] - phys_avail[4]);
-			mem_layout[2].mem_first_page = atop(phys_avail[4]);
-			mem_layout[2].mem_last_page = atop(phys_avail[5]-1);
-			mem_layout[2].mem_freelist = VM_FREELIST_DEFAULT;
+			mem_layout[1].mem_first_page = atop(phys_avail[4]);
+			mem_layout[1].mem_last_page = atop(phys_avail[5]-1);
+			mem_layout[1].mem_freelist = VM_FREELIST_DEFAULT;
 			realmem_bytes=0;
 		}else{
+#if 0 /* XXX: need fix on mips64 pmap code */
 			/* Now map the rest of the memory */
 			phys_avail[2] = 0x410000000ULL;
 			phys_avail[3] = (0x410000000ULL + realmem_bytes);
@@ -301,6 +303,7 @@ octeon_memory_init(struct boot_info *boot_info)
 			mem_layout[1].mem_last_page = atop(phys_avail[3]-1);
 			mem_layout[1].mem_freelist = VM_FREELIST_DEFAULT;
 			realmem_bytes=0;
+#endif
 		}
  	}
 
@@ -356,7 +359,7 @@ mips_init(__register_t a0, __register_t a1, __register_t a2 __unused,
 	/*
 	 * Set up early console output.
 	 */
-	cn_tab = &octcons;
+	cn_tab = &uartcons;
 
 	/*
 	 * Reserve space for the symbol table, if it exists.
@@ -787,8 +790,8 @@ static int (*ipi_handler)(void *);
 
 uint32_t ipi_intr(uint32_t, struct trap_frame *);
 
-extern bus_space_t obio_tag;
-extern bus_space_handle_t obio_h;
+extern bus_space_t iobus_tag;
+extern bus_space_handle_t iobus_h;
 
 void
 hw_cpu_boot_secondary(struct cpu_info *ci)
@@ -847,9 +850,9 @@ hw_cpu_hatch(struct cpu_info *ci)
 	cpu_startclock(ci);
 	ncpus++;
 	cpuset_add(&cpus_running, ci);
-	obio_intr_init();
+	octeon_intr_init();
 	mips64_ipi_init();
-	obio_setintrmask(0);
+	octeon_setintrmask(0);
 	spl0();
 	(void)updateimask(0);
 
@@ -868,14 +871,14 @@ ipi_intr(uint32_t hwpend, struct trap_frame *frame)
 	/*
 	 * Mask all pending interrupts.
 	 */
-	bus_space_write_8(&obio_tag, obio_h, CIU_IP3_EN0(cpuid), 0);
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_IP3_EN0(cpuid), 0);
 
 	ipi_handler((void *)cpuid);
 
 	/*
 	 * Reenable interrupts which have been serviced.
 	 */
-	bus_space_write_8(&obio_tag, obio_h, CIU_IP3_EN0(cpuid),
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_IP3_EN0(cpuid),
 		(1ULL << CIU_INT_MBOX0)|(1ULL << CIU_INT_MBOX1));
 	return hwpend;
 }
@@ -886,9 +889,9 @@ hw_ipi_intr_establish(int (*func)(void *), u_long cpuid)
 	if (cpuid == 0)
 		ipi_handler = func;
 
-	bus_space_write_8(&obio_tag, obio_h, CIU_MBOX_CLR(cpuid),
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_MBOX_CLR(cpuid),
 		0xffffffff);
-	bus_space_write_8(&obio_tag, obio_h, CIU_IP3_EN0(cpuid),
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_IP3_EN0(cpuid),
 		(1ULL << CIU_INT_MBOX0)|(1ULL << CIU_INT_MBOX1));
 	set_intr(INTPRI_IPI, CR_INT_1, ipi_intr);
 
@@ -898,15 +901,15 @@ hw_ipi_intr_establish(int (*func)(void *), u_long cpuid)
 void
 hw_ipi_intr_set(u_long cpuid)
 {
-	bus_space_write_8(&obio_tag, obio_h, CIU_MBOX_SET(cpuid), 1);
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_MBOX_SET(cpuid), 1);
 }
 
 void
 hw_ipi_intr_clear(u_long cpuid)
 {
 	uint64_t clr =
-		bus_space_read_8(&obio_tag, obio_h, CIU_MBOX_CLR(cpuid));
-	bus_space_write_8(&obio_tag, obio_h, CIU_MBOX_CLR(cpuid), clr);
+		bus_space_read_8(&iobus_tag, iobus_h, CIU_MBOX_CLR(cpuid));
+	bus_space_write_8(&iobus_tag, iobus_h, CIU_MBOX_CLR(cpuid), clr);
 }
 
 void

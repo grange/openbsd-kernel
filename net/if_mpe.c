@@ -1,4 +1,4 @@
-/* $OpenBSD: if_mpe.c,v 1.23 2010/09/21 06:13:06 claudio Exp $ */
+/* $OpenBSD: if_mpe.c,v 1.25 2011/01/28 14:58:24 reyk Exp $ */
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@spootnik.org>
@@ -71,7 +71,9 @@ struct if_clone	mpe_cloner =
     IF_CLONE_INITIALIZER("mpe", mpe_clone_create, mpe_clone_destroy);
 
 extern int	mpls_mapttl_ip;
+#ifdef INET6
 extern int	mpls_mapttl_ip6;
+#endif
 
 void
 mpeattach(int nmpe)
@@ -382,7 +384,7 @@ mpe_input(struct mbuf *m, struct ifnet *ifp, struct sockaddr_mpls *smpls,
 		}
 
 		if (in_cksum(m, hlen) != 0) {
-			m_free(m);
+			m_freem(m);
 			return;
 		}
 
@@ -408,6 +410,7 @@ mpe_input(struct mbuf *m, struct ifnet *ifp, struct sockaddr_mpls *smpls,
 	splx(s);
 }
 
+#ifdef INET6
 void
 mpe_input6(struct mbuf *m, struct ifnet *ifp, struct sockaddr_mpls *smpls,
     u_int8_t ttl)
@@ -441,6 +444,7 @@ mpe_input6(struct mbuf *m, struct ifnet *ifp, struct sockaddr_mpls *smpls,
 	schednetisr(NETISR_IPV6);
 	splx(s);
 }
+#endif	/* INET6 */
 
 int
 mpe_newlabel(struct ifnet *ifp, int cmd, struct shim_hdr *shim)

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ichiic.c,v 1.24 2010/04/08 00:23:53 tedu Exp $	*/
+/*	$OpenBSD: ichiic.c,v 1.26 2011/04/21 21:56:53 jsg Exp $	*/
 
 /*
  * Copyright (c) 2005, 2006 Alexander Yurchenko <grange@openbsd.org>
@@ -86,6 +86,7 @@ struct cfdriver ichiic_cd = {
 
 const struct pci_matchid ichiic_ids[] = {
 	{ PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_3400_SMB },
+	{ PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_6SERIES_SMB },
 	{ PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_6300ESB_SMB },
 	{ PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_6321ESB_SMB },
 	{ PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_82801AA_SMB },
@@ -284,7 +285,7 @@ ichiic_i2c_exec(void *cookie, i2c_op_t op, i2c_addr_t addr,
 		ichiic_intr(sc);
 	} else {
 		/* Wait for interrupt */
-		if (tsleep(sc, PRIBIO, "iicexec", ICHIIC_TIMEOUT * hz))
+		if (tsleep(sc, PRIBIO, "ichiic", ICHIIC_TIMEOUT * hz))
 			goto timeout;
 	}
 

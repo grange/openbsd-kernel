@@ -1,4 +1,4 @@
-/* $OpenBSD: acpi.c,v 1.222 2011/01/02 04:56:57 jordan Exp $ */
+/* $OpenBSD: acpi.c,v 1.224 2011/04/27 20:55:42 jcs Exp $ */
 /*
  * Copyright (c) 2005 Thorsten Lockert <tholo@sigmasoft.com>
  * Copyright (c) 2005 Jordan Hargrave <jordan@openbsd.org>
@@ -707,7 +707,7 @@ acpi_attach(struct device *parent, struct device *self, void *aux)
 
 	printf("\n%s: tables", DEVNAME(sc));
 	SIMPLEQ_FOREACH(entry, &sc->sc_tables, q_next) {
-		printf(" %.4s", entry->q_table);
+		printf(" %.4s", (char *)entry->q_table);
 	}
 	printf("\n");
 
@@ -2328,7 +2328,8 @@ acpi_foundhid(struct aml_node *node, void *arg)
 		aaa.aaa_name = "acpibtn";
 	else if (!strcmp(dev, ACPI_DEV_ASUS))
 		aaa.aaa_name = "acpiasus";
-	else if (!strcmp(dev, ACPI_DEV_THINKPAD)) {
+	else if (!strcmp(dev, ACPI_DEV_IBM) ||
+	    !strcmp(dev, ACPI_DEV_LENOVO)) {
 		aaa.aaa_name = "acpithinkpad";
 		acpi_thinkpad_enabled = 1;
 	} else if (!strcmp(dev, ACPI_DEV_ASUSAIBOOSTER))

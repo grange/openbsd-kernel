@@ -1,4 +1,4 @@
-/*	$OpenBSD: aic6360var.h,v 1.6 2006/06/03 01:51:54 martin Exp $	*/
+/*	$OpenBSD: aic6360var.h,v 1.8 2011/04/06 18:14:35 miod Exp $	*/
 /*	$NetBSD: aic6360.c,v 1.52 1996/12/10 21:27:51 thorpej Exp $	*/
 
 /*
@@ -131,6 +131,9 @@ struct aic_softc {
 	struct aic_acb sc_acb[8];
 	struct aic_tinfo sc_tinfo[8];
 
+	struct mutex		sc_acb_mtx;
+	struct scsi_iopool	sc_iopool;
+
 	/* Data about the current nexus (updated for every cmd switch) */
 	u_char	*sc_dp;		/* Current data pointer */
 	size_t	sc_dleft;	/* Data bytes left to transfer */
@@ -194,7 +197,7 @@ struct aic_softc {
 	do { if ((aic_debug & AIC_DOBREAK) != 0) Debugger(); } while (0)
 #define	AIC_ASSERT(x) \
 	do { \
-		if (!x) { \
+		if (!(x)) { \
 			printf("%s at line %d: assertion failed\n", \
 			    sc->sc_dev.dv_xname, __LINE__); \
 			Debugger(); \

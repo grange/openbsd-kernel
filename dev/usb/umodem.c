@@ -1,4 +1,4 @@
-/*	$OpenBSD: umodem.c,v 1.40 2011/01/16 22:35:29 jakemsr Exp $ */
+/*	$OpenBSD: umodem.c,v 1.43 2011/03/22 16:31:19 deraadt Exp $ */
 /*	$NetBSD: umodem.c,v 1.45 2002/09/23 05:51:23 simonb Exp $	*/
 
 /*
@@ -173,13 +173,19 @@ umodem_get_caps(struct usb_attach_arg *uaa, int ctl_iface_no,
 	usbd_desc_iter_t iter;
 	int current_iface_no = -1;
 
+	*data_iface_no = -1;
 	*cm_cap = *acm_cap = 0;
 	usb_desc_iter_init(uaa->device, &iter);
 	desc = usb_desc_iter_next(&iter);
 	while (desc) {
 		if (desc->bDescriptorType == UDESC_INTERFACE) {
-		    id = (usb_interface_descriptor_t *)desc;
-		    current_iface_no = id->bInterfaceNumber;
+			id = (usb_interface_descriptor_t *)desc;
+			current_iface_no = id->bInterfaceNumber;
+			if (current_iface_no != ctl_iface_no &&
+			    id->bInterfaceClass == UICLASS_CDC_DATA &&
+			    id->bInterfaceSubClass == UISUBCLASS_DATA &&
+			    *data_iface_no == -1)
+				*data_iface_no = current_iface_no;
 		}
 		if (current_iface_no == ctl_iface_no &&
 		    desc->bDescriptorType == UDESC_CS_INTERFACE) {
@@ -234,10 +240,10 @@ umodem_match(struct device *parent, void *match, void *aux)
 	if (ret == UMATCH_NONE)
 		return (ret);
 
-	/* umodem doesn't yet support devices without a data iface */
+	/* umodem doesn't support devices without a data iface */
 	umodem_get_caps(uaa, id->bInterfaceNumber, &data_iface_no,
 	    &cm_cap, &acm_cap);
-	if (data_iface_no == 0)
+	if (data_iface_no == -1)
 		ret = UMATCH_NONE;
 
 	return (ret);
@@ -267,8 +273,8 @@ umodem_attach(struct device *parent, struct device *self, void *aux)
 	/* Get the capabilities. */
 	umodem_get_caps(uaa, id->bInterfaceNumber, &data_iface_no,
 	    &sc->sc_cm_cap, &sc->sc_acm_cap);
-	if (data_iface_no == 0) {
-		printf("%s: no pointer to data interface\n",
+	if (data_iface_no == -1) {
+		printf("%s: no data interface\n",
 		       sc->sc_dev.dv_xname);
 		goto bad;
 	}
@@ -385,9 +391,6 @@ umodem_attach(struct device *parent, struct device *self, void *aux)
 	uca.arg = sc;
 	uca.info = NULL;
 
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev,
-			   &sc->sc_dev);
-
 	DPRINTF(("umodem_attach: sc=%p\n", sc));
 	sc->sc_subdev = config_found_sm(self, &uca, ucomprint, ucomsubmatch);
 
@@ -454,8 +457,9 @@ umodem_intr(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 	if (status != USBD_NORMAL_COMPLETION) {
 		if (status == USBD_NOT_STARTED || status == USBD_CANCELLED)
 			return;
-		printf("%s: abnormal status: %s\n", sc->sc_dev.dv_xname,
-		       usbd_errstr(status));
+		DPRINTF(("%s: abnormal status: %s\n", sc->sc_dev.dv_xname,
+		       usbd_errstr(status)));
+		usbd_clear_endpoint_stall_async(sc->sc_notify_pipe);
 		return;
 	}
 
@@ -761,9 +765,6 @@ umodem_detach(struct device *self, int flags)
 
 	if (sc->sc_subdev != NULL)
 		rv = config_detach(sc->sc_subdev, flags);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-			   &sc->sc_dev);
 
 	return (rv);
 }

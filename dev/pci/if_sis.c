@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_sis.c,v 1.101 2010/08/31 17:13:44 deraadt Exp $ */
+/*	$OpenBSD: if_sis.c,v 1.104 2011/04/14 06:27:52 dlg Exp $ */
 /*
  * Copyright (c) 1997, 1998, 1999
  *	Bill Paul <wpaul@ctr.columbia.edu>.  All rights reserved.
@@ -861,7 +861,7 @@ int
 sis_probe(struct device *parent, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, sis_devices,
-	    sizeof(sis_devices)/sizeof(sis_devices[0])));
+	    nitems(sis_devices)));
 }
 
 /*
@@ -1272,6 +1272,11 @@ sis_newbuf(struct sis_softc *sc, struct sis_desc *c)
 
 	c->sis_mbuf = m_new;
 	c->sis_ptr = htole32(c->map->dm_segs[0].ds_addr);
+
+	bus_dmamap_sync(sc->sc_dmat, sc->sc_listmap,
+	    ((caddr_t)c - sc->sc_listkva), sizeof(struct sis_desc),
+	    BUS_DMASYNC_PREWRITE);
+
 	c->sis_ctl = htole32(ETHER_MAX_DIX_LEN);
 
 	bus_dmamap_sync(sc->sc_dmat, sc->sc_listmap,
@@ -1471,58 +1476,43 @@ sis_tick(void *xsc)
 int
 sis_intr(void *arg)
 {
-	struct sis_softc	*sc;
-	struct ifnet		*ifp;
+	struct sis_softc	*sc = arg;
+	struct ifnet		*ifp = &sc->arpcom.ac_if;
 	u_int32_t		status;
-	int			claimed = 0;
-
-	sc = arg;
-	ifp = &sc->arpcom.ac_if;
 
 	if (sc->sis_stopped)	/* Most likely shared interrupt */
-		return (claimed);
+		return (0);
 
-	/* Disable interrupts. */
-	CSR_WRITE_4(sc, SIS_IER, 0);
+	/* Reading the ISR register clears all interrupts. */
+	status = CSR_READ_4(sc, SIS_ISR);
+	if ((status & SIS_INTRS) == 0)
+		return (0);
 
-	for (;;) {
-		/* Reading the ISR register clears all interrupts. */
-		status = CSR_READ_4(sc, SIS_ISR);
+	if (status &
+	    (SIS_ISR_TX_DESC_OK | SIS_ISR_TX_ERR |
+	     SIS_ISR_TX_OK | SIS_ISR_TX_IDLE))
+		sis_txeof(sc);
 
-		if ((status & SIS_INTRS) == 0)
-			break;
+	if (status &
+	    (SIS_ISR_RX_DESC_OK | SIS_ISR_RX_OK |
+	     SIS_ISR_RX_ERR | SIS_ISR_RX_IDLE))
+		sis_rxeof(sc);
 
-		claimed = 1;
-
-		if (status &
-		    (SIS_ISR_TX_DESC_OK | SIS_ISR_TX_ERR |
-		     SIS_ISR_TX_OK | SIS_ISR_TX_IDLE))
-			sis_txeof(sc);
-
-		if (status &
-		    (SIS_ISR_RX_DESC_OK | SIS_ISR_RX_OK |
-		     SIS_ISR_RX_ERR | SIS_ISR_RX_IDLE))
-			sis_rxeof(sc);
-
-		if (status & (SIS_ISR_RX_IDLE)) {
-			/* consume what's there so that sis_rx_cons points
-			 * to the first HW owned descriptor. */
-			sis_rxeof(sc);
-			/* reprogram the RX listptr */
-			CSR_WRITE_4(sc, SIS_RX_LISTPTR,
-			    sc->sc_listmap->dm_segs[0].ds_addr +
-			    offsetof(struct sis_list_data,
-			    sis_rx_list[sc->sis_cdata.sis_rx_cons]));
-		}
-
-		if (status & SIS_ISR_SYSERR) {
-			sis_reset(sc);
-			sis_init(sc);
-		}
+	if (status & (SIS_ISR_RX_IDLE)) {
+		/* consume what's there so that sis_rx_cons points
+		 * to the first HW owned descriptor. */
+		sis_rxeof(sc);
+		/* reprogram the RX listptr */
+		CSR_WRITE_4(sc, SIS_RX_LISTPTR,
+		    sc->sc_listmap->dm_segs[0].ds_addr +
+		    offsetof(struct sis_list_data,
+		    sis_rx_list[sc->sis_cdata.sis_rx_cons]));
 	}
 
-	/* Re-enable interrupts. */
-	CSR_WRITE_4(sc, SIS_IER, 1);
+	if (status & SIS_ISR_SYSERR) {
+		sis_reset(sc);
+		sis_init(sc);
+	}
 
 	/*
 	 * XXX: Re-enable RX engine every time otherwise it occasionally
@@ -1533,7 +1523,7 @@ sis_intr(void *arg)
 	if (!IFQ_IS_EMPTY(&ifp->if_snd))
 		sis_start(ifp);
 
-	return (claimed);
+	return (1);
 }
 
 /*

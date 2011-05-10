@@ -1,4 +1,4 @@
-/*	$OpenBSD: isapnp.c,v 1.37 2010/06/24 21:17:59 jasper Exp $	*/
+/*	$OpenBSD: isapnp.c,v 1.39 2011/04/07 15:30:16 miod Exp $	*/
 /*	$NetBSD: isapnp.c,v 1.9.4.3 1997/10/29 00:40:43 thorpej Exp $	*/
 
 /*
@@ -200,7 +200,7 @@ isapnp_free_region(t, r)
 		return;
 
 	bus_space_unmap(t, r->h, r->length);
-	r->h = NULL;
+	r->h = 0;
 }
 
 
@@ -217,7 +217,7 @@ isapnp_alloc_region(t, r)
 	if (r->length == 0)
 		return 0;
 
-	r->h = NULL;
+	r->h = 0;
 	for (r->base = r->minbase; r->base <= r->maxbase;
 	     r->base += r->align) {
 		error = bus_space_map(t, r->base, r->length, 0, &r->h);
@@ -613,7 +613,7 @@ isapnp_submatch(parent, match, aux)
 	const char *dname;
 	int i;
 
-	for (i = 0; i < sizeof(isapnp_knowndevs)/sizeof(isapnp_knowndevs[0]); i++) {
+	for (i = 0; i < nitems(isapnp_knowndevs); i++) {
 		dname = NULL;
 
 		if (strcmp(isapnp_knowndevs[i].pnpid, ipa->ipa_devlogic) == 0)

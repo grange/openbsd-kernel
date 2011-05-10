@@ -1,4 +1,4 @@
-/*	$OpenBSD: uipc_mbuf.c,v 1.148 2010/12/21 14:00:43 claudio Exp $	*/
+/*	$OpenBSD: uipc_mbuf.c,v 1.157 2011/05/04 16:05:49 blambert Exp $	*/
 /*	$NetBSD: uipc_mbuf.c,v 1.15.4.1 1996/06/13 17:11:44 cgd Exp $	*/
 
 /*
@@ -92,6 +92,11 @@
 #include <uvm/uvm.h>
 #include <uvm/uvm_extern.h>
 
+#ifdef DDB
+#include <machine/db_machdep.h>
+#include <ddb/db_interface.h>
+#endif
+
 struct	mbstat mbstat;		/* mbuf stats */
 struct	pool mbpool;		/* mbuf pool */
 
@@ -136,7 +141,7 @@ mbinit(void)
 	int i;
 
 	pool_init(&mbpool, MSIZE, 0, 0, 0, "mbpl", NULL);
-	pool_set_constraints(&mbpool, &dma_constraint, 1);
+	pool_set_constraints(&mbpool, &kp_dma);
 	pool_setlowat(&mbpool, mblowat);
 
 	for (i = 0; i < nitems(mclsizes); i++) {
@@ -144,7 +149,7 @@ mbinit(void)
 		    mclsizes[i] >> 10);
 		pool_init(&mclpools[i], mclsizes[i], 0, 0, 0,
 		    mclnames[i], NULL);
-		pool_set_constraints(&mclpools[i], &dma_constraint, 1); 
+		pool_set_constraints(&mclpools[i], &kp_dma); 
 		pool_setlowat(&mclpools[i], mcllowat);
 	}
 
@@ -660,7 +665,7 @@ m_copym0(struct mbuf *m0, int off, int len, int wait, int deep)
 		if (n == NULL)
 			goto nospace;
 		if (copyhdr) {
-			if (m_dup_pkthdr(n, m0))
+			if (m_dup_pkthdr(n, m0, wait))
 				goto nospace;
 			if (len != M_COPYALL)
 				n->m_pkthdr.len = len;
@@ -912,20 +917,16 @@ m_adj(struct mbuf *mp, int req_len)
 }
 
 /*
- * Rearange an mbuf chain so that len bytes are contiguous
- * and in the data area of an mbuf (so that mtod and dtom
- * will work for a structure of size len).  Returns the resulting
+ * Rearrange an mbuf chain so that len bytes are contiguous
+ * and in the data area of an mbuf (so that mtod will work
+ * for a structure of size len).  Returns the resulting
  * mbuf chain on success, frees it and returns null on failure.
- * If there is room, it will add up to max_protohdr-len extra bytes to the
- * contiguous region in an attempt to avoid being called next time.
  */
-struct mbuf *
-m_pullup(struct mbuf *n, int len)
+struct mbuf *   
+m_pullup(struct mbuf *n, int len)       
 {
 	struct mbuf *m;
 	int count;
-	int space;
-	int s;
 
 	/*
 	 * If first mbuf has no cluster, and has room for len bytes
@@ -939,62 +940,7 @@ m_pullup(struct mbuf *n, int len)
 		m = n;
 		n = n->m_next;
 		len -= m->m_len;
-	} else {
-		if (len > MHLEN)
-			goto bad;
-		MGET(m, M_DONTWAIT, n->m_type);
-		if (m == NULL)
-			goto bad;
-		m->m_len = 0;
-		if (n->m_flags & M_PKTHDR)
-			M_MOVE_PKTHDR(m, n);
-	}
-	space = &m->m_dat[MLEN] - (m->m_data + m->m_len);
-	s = splnet();
-	do {
-		count = min(min(max(len, max_protohdr), space), n->m_len);
-		bcopy(mtod(n, caddr_t), mtod(m, caddr_t) + m->m_len,
-		    (unsigned)count);
-		len -= count;
-		m->m_len += count;
-		n->m_len -= count;
-		space -= count;
-		if (n->m_len)
-			n->m_data += count;
-		else
-			n = m_free_unlocked(n);
-	} while (len > 0 && n);
-	if (len > 0) {
-		(void)m_free_unlocked(m);
-		splx(s);
-		goto bad;
-	}
-	splx(s);
-	m->m_next = n;
-	return (m);
-bad:
-	m_freem(n);
-	return (NULL);
-}
-
-/*
- * m_pullup2() works like m_pullup, save that len can be <= MCLBYTES.
- * m_pullup2() only works on values of len such that MHLEN < len <= MCLBYTES,
- * it calls m_pullup() for values <= MHLEN.  It also only coagulates the
- * requested number of bytes.  (For those of us who expect unwieldy option
- * headers.
- *
- * KEBE SAYS:  Remember that dtom() calls with data in clusters does not work!
- */
-struct mbuf *   
-m_pullup2(struct mbuf *n, int len)       
-{
-	struct mbuf *m;
-	int count;
-
-	if (len <= MHLEN)
-		return m_pullup(n, len);
-	if ((n->m_flags & M_EXT) != 0 &&
+	} else if ((n->m_flags & M_EXT) != 0 && len > MHLEN &&
 	    n->m_data + len < &n->m_data[MCLBYTES] && n->m_next) {
 		if (n->m_len >= len)
 			return (n);
@@ -1007,20 +953,16 @@ m_pullup2(struct mbuf *n, int len)
 		MGET(m, M_DONTWAIT, n->m_type);
 		if (m == NULL)
 			goto bad;
-		MCLGET(m, M_DONTWAIT);
-		if ((m->m_flags & M_EXT) == 0) {
-			m_free(m);
-			goto bad;
+		if (len > MHLEN) {
+			MCLGET(m, M_DONTWAIT);
+			if ((m->m_flags & M_EXT) == 0) {
+				m_free(m);
+				goto bad;
+			}
 		}
 		m->m_len = 0;
-		if (n->m_flags & M_PKTHDR) {
-			/* Too many adverse side effects. */
-			/* M_MOVE_PKTHDR(m, n); */
-			m->m_flags = (n->m_flags & M_COPYFLAGS) |
-			    M_EXT | M_CLUSTER;
-			M_MOVE_HDR(m, n);
-			/* n->m_data is cool. */
-		}
+		if (n->m_flags & M_PKTHDR)
+			M_MOVE_PKTHDR(m, n);
 	}
 
 	do {
@@ -1159,7 +1101,7 @@ m_split(struct mbuf *m0, int len0, int wait)
 		MGETHDR(n, wait, m0->m_type);
 		if (n == NULL)
 			return (NULL);
-		if (m_dup_pkthdr(n, m0)) {
+		if (m_dup_pkthdr(n, m0, wait)) {
 			m_freem(n);
 			return (NULL);
 		}
@@ -1360,8 +1302,10 @@ m_trailingspace(struct mbuf *m)
  * from must have M_PKTHDR set, and to must be empty.
  */
 int
-m_dup_pkthdr(struct mbuf *to, struct mbuf *from)
+m_dup_pkthdr(struct mbuf *to, struct mbuf *from, int wait)
 {
+	int error;
+
 	KASSERT(from->m_flags & M_PKTHDR);
 
 	to->m_flags = (to->m_flags & (M_EXT | M_CLUSTER));
@@ -1370,8 +1314,8 @@ m_dup_pkthdr(struct mbuf *to, struct mbuf *from)
 
 	SLIST_INIT(&to->m_pkthdr.tags);
 
-	if (m_tag_copy_chain(to, from))
-		return (ENOMEM);
+	if ((error = m_tag_copy_chain(to, from, wait)) != 0)
+		return (error);
 
 	if ((to->m_flags & M_EXT) == 0)
 		to->m_data = to->m_pktdat;
@@ -1380,9 +1324,6 @@ m_dup_pkthdr(struct mbuf *to, struct mbuf *from)
 }
 
 #ifdef DDB
-#include <machine/db_machdep.h>
-#include <ddb/db_interface.h>
-
 void
 m_print(void *v, int (*pr)(const char *, ...))
 {

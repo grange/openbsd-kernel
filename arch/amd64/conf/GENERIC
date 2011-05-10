@@ -1,4 +1,4 @@
-#	$OpenBSD: GENERIC,v 1.312 2011/01/08 11:56:30 damien Exp $
+#	$OpenBSD: GENERIC,v 1.316 2011/04/10 20:27:02 shadchin Exp $
 #
 # For further information on compiling OpenBSD kernels, see the config(8)
 # man page.
@@ -45,7 +45,7 @@ acpibtn*	at acpi?
 acpicpu*	at acpi?
 acpidock*	at acpi?
 acpiec*		at acpi?
-acpiprt*	at acpi? 
+acpiprt*	at acpi?
 acpitz*		at acpi?
 acpimadt0	at acpi?
 acpimcfg*	at acpi?
@@ -90,7 +90,6 @@ schsio*	at isa? port 0x4e
 schsio*	at isa? port 0x162e
 schsio*	at isa? port 0x164e
 
-viaenv*	at pci?			# VIA VT82C686A hardware monitor
 #viasio* at isa? port 0x2e flags 0x0000	# VIA VT1211 LPC Super I/O
 #viasio* at isa? port 0x4e flags 0x0000
 
@@ -105,7 +104,7 @@ piixpm*	at pci?			# Intel PIIX PM
 iic*	at piixpm?
 ichiic*	at pci?			# Intel ICH SMBus controller
 iic*	at ichiic?
-viapm*	at pci?			# VIA VT8237 power management
+viapm*	at pci?			# VIA SMBus controller
 iic*	at viapm?
 amdiic* at pci?			# AMD-8111 SMBus controller
 iic*	at amdiic?
@@ -263,9 +262,9 @@ sdmmc*	at sdhc?		# SD/MMC bus
 scsibus* at sdmmc?		# SCSI emulation
 
 # Bluetooth controllers
-sbt*	at sdmmc?		# SDIO Bluetooth
+sbt*	at sdmmc? disable	# SDIO Bluetooth
 bthub*	at sbt?
-ubt*	at uhub?		# USB Bluetooth
+ubt*	at uhub? disable	# USB Bluetooth
 bthub*	at ubt?
 bthidev* at bthub?		# Bluetooth HID support
 btkbd*	at bthidev?
@@ -469,7 +468,7 @@ xge*	at pci?				# Neterion Xframe-I/II 10Gb ethernet
 thtc*	at pci?				# Tehuti Networks 10Gb ethernet
 tht*	at thtc?
 gem*	at pci?				# Sun 'gem' ethernet
-#bce*	at pci?				# Broadcom BCM4401
+bce*	at pci?				# Broadcom BCM4401
 vic*	at pci?				# VMware VMXnet virtual interface
 et*	at pci?				# Agere/LSI ET1310
 age*	at pci?				# Attansic L1 Ethernet

@@ -1,4 +1,4 @@
-/*	$OpenBSD: in_pcb.c,v 1.113 2010/07/03 04:44:51 guenther Exp $	*/
+/*	$OpenBSD: in_pcb.c,v 1.119 2011/04/28 09:56:27 claudio Exp $	*/
 /*	$NetBSD: in_pcb.c,v 1.25 1996/02/13 23:41:53 christos Exp $	*/
 
 /*
@@ -276,9 +276,13 @@ in_pcbbind(v, nam, p)
 		} else if (sin->sin_addr.s_addr != INADDR_ANY) {
 			sin->sin_port = 0;		/* yech... */
 			if (!(so->so_options & SO_BINDANY) &&
-			    in_iawithaddr(sin->sin_addr, NULL,
-			    inp->inp_rtableid) == 0)
-				return (EADDRNOTAVAIL);
+			    in_iawithaddr(sin->sin_addr,
+			    inp->inp_rtableid) == NULL)
+				/* SOCK_RAW does not use in_pcbbind() */
+				if (!(so->so_type == SOCK_DGRAM &&
+				    in_broadcast(sin->sin_addr, NULL,
+				    inp->inp_rtableid)))
+					return (EADDRNOTAVAIL);
 		}
 		if (lport) {
 			struct inpcb *t;
@@ -509,8 +513,23 @@ in_pcbdetach(v)
 	splx(s);
 #endif
 #if NPF > 0
-	if (inp->inp_pf_sk)
-		((struct pf_state_key *)inp->inp_pf_sk)->inp = NULL;
+	if (inp->inp_pf_sk) {
+		struct pf_state_key	*sk;
+		struct pf_state_item	*si;
+
+		s = splsoftnet();
+		sk = (struct pf_state_key *)inp->inp_pf_sk;
+		TAILQ_FOREACH(si, &sk->states, entry)
+			if (sk == si->s->key[PF_SK_STACK] && si->s->rule.ptr &&
+			    si->s->rule.ptr->divert.port) {
+				pf_unlink_state(si->s);
+				break;
+			}
+		/* pf_unlink_state() may have detached the state */
+		if (inp->inp_pf_sk)
+			((struct pf_state_key *)inp->inp_pf_sk)->inp = NULL;
+		splx(s);
+	}
 #endif
 	s = splnet();
 	LIST_REMOVE(inp, inp_lhash);

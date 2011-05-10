@@ -1,4 +1,4 @@
-/*	$OpenBSD: svr4_signal.c,v 1.12 2009/12/09 16:29:56 jsg Exp $	 */
+/*	$OpenBSD: svr4_signal.c,v 1.14 2011/04/18 21:44:56 guenther Exp $	 */
 /*	$NetBSD: svr4_signal.c,v 1.24 1996/12/06 03:21:53 christos Exp $	 */
 
 /*

@@ -1,4 +1,4 @@
-/* $OpenBSD: softraid_raid6.c,v 1.19 2010/08/07 03:50:01 krw Exp $ */
+/* $OpenBSD: softraid_raid6.c,v 1.24 2011/04/21 20:28:16 jordan Exp $ */
 /*
  * Copyright (c) 2009 Marco Peereboom <marco@peereboom.us>
  * Copyright (c) 2009 Jordan Hargrave <jordan@openbsd.org>
@@ -66,12 +66,12 @@ void	sr_raid6_xorp(void *, void *, int);
 void	sr_raid6_xorq(void *, void *, int, int);
 int	sr_raid6_addio(struct sr_workunit *wu, int, daddr64_t, daddr64_t,
 	    void *, int, int, void *, void *, int);
-void 	sr_dump(void *, int);
+void	sr_dump(void *, int);
 void	sr_raid6_scrub(struct sr_discipline *);
 int	sr_failio(struct sr_workunit *);
 
 void	*sr_get_block(struct sr_discipline *, int);
-void	sr_put_block(struct sr_discipline *, void *);
+void	sr_put_block(struct sr_discipline *, void *, int);
 
 void	gf_init(void);
 uint8_t gf_inv(uint8_t);
@@ -83,41 +83,6 @@ uint8_t gf_mul(uint8_t, uint8_t);
 #define SR_FAILY		(1L << 1)
 #define SR_FAILP		(1L << 2)
 #define SR_FAILQ		(1L << 3)
-
-#define M_FAIL 0x00
-
-#define M_RX   0x01
-#define M_RXP  0x02
-#define M_RXQ  0x03
-#define M_RXY  0x04
-#define M_RFLG 0x0F
-
-#define M_WXPQ 0x10
-#define M_WXY  0x20
-#define M_WPQ  0x30
-#define M_WFLG 0xF0
-
-/* Mapping of Failure Flags to Read/Write state */
-uint8_t sr_rwmode[16] = {
-	[SR_FAILX+SR_FAILY+SR_FAILP] = M_FAIL,
-	[SR_FAILX+SR_FAILY+SR_FAILQ] = M_FAIL,
-	[SR_FAILX+SR_FAILP+SR_FAILQ] = M_FAIL,
-	[SR_FAILY+SR_FAILP+SR_FAILQ] = M_FAIL,
-	[SR_FAILX+SR_FAILY+SR_FAILP+SR_FAILQ] = M_FAIL,
-
-	[SR_NOFAIL]         = M_RX | M_WXPQ,
-	[SR_FAILY]          = M_RX | M_WXPQ,
-	[SR_FAILP]          = M_RX | M_WXPQ,
-	[SR_FAILQ]          = M_RX | M_WXPQ,
-	[SR_FAILY+SR_FAILP] = M_RX | M_WXPQ,
-	[SR_FAILY+SR_FAILQ] = M_RX | M_WXPQ,
-	[SR_FAILP+SR_FAILQ] = M_RX | M_WXPQ,
-
-	[SR_FAILX]          = M_RXQ | M_WPQ,
-	[SR_FAILX+SR_FAILQ] = M_RXQ | M_WPQ,
-	[SR_FAILX+SR_FAILP] = M_RXP | M_WPQ,
-	[SR_FAILX+SR_FAILY] = M_RXY | M_WXY,
-};
 
 struct sr_raid6_opaque {
 	int      gn;
@@ -443,7 +408,7 @@ die:
 }
 
 /*  modes:
- *   readq: sr_raid6_addio(i, lba, length, NULL, SCSI_DATA_IN, 
+ *   readq: sr_raid6_addio(i, lba, length, NULL, SCSI_DATA_IN,
  *	        SR_CCBF_FREEBUF, qbuf, NULL, 0);
  *   readp: sr_raid6_addio(i, lba, length, NULL, SCSI_DATA_IN,
  *		SR_CCBF_FREEBUF, pbuf, NULL, 0);
@@ -454,11 +419,11 @@ die:
 int
 sr_raid6_rw(struct sr_workunit *wu)
 {
-	struct sr_workunit	*wu_w = NULL;
+	struct sr_workunit	*wu_r = NULL;
 	struct sr_discipline	*sd = wu->swu_dis;
 	struct scsi_xfer	*xs = wu->swu_xs;
 	struct sr_chunk		*scp;
-	int			s, fail, i, rwmode, gxinv, pxinv;
+	int			s, fail, i, gxinv, pxinv;
 	daddr64_t		blk, lbaoffs, strip_no, chunk, qchunk, pchunk, fchunk;
 	daddr64_t		strip_size, no_chunk, lba, chunk_offs, phys_offs;
 	daddr64_t		strip_bits, length, strip_offs, datalen, row_size;
@@ -477,11 +442,10 @@ sr_raid6_rw(struct sr_workunit *wu)
 	datalen = xs->datalen;
 	lbaoffs	= blk << DEV_BSHIFT;
 
-	rwmode = (xs->flags & SCSI_DATA_IN) ? M_RFLG : M_WFLG;
 	if (xs->flags & SCSI_DATA_OUT)
 		/* create write workunit */
-		if ((wu_w = sr_wu_get(sd, 0)) == NULL) {
-			printf("%s: can't get wu_w", DEVNAME(sd->sd_sc));
+		if ((wu_r = scsi_io_get(&sd->sd_iopool, SCSI_NOSLEEP)) == NULL){
+			printf("%s: can't get wu_r", DEVNAME(sd->sd_sc));
 			goto bad;
 		}
 
@@ -496,7 +460,7 @@ sr_raid6_rw(struct sr_workunit *wu)
 		/* get size remaining in this stripe */
 		length = MIN(strip_size - strip_offs, datalen);
 
-		/* map disk offset to parity/data drive */	
+		/* map disk offset to parity/data drive */
 		chunk = strip_no % no_chunk;
 
 		qchunk = (no_chunk + 1) - ((strip_no / no_chunk) % (no_chunk+2));
@@ -510,7 +474,7 @@ sr_raid6_rw(struct sr_workunit *wu)
 			chunk++;
 
 		lba = phys_offs >> DEV_BSHIFT;
-	
+
 		/* XXX big hammer.. exclude I/O from entire stripe */
 		if (wu->swu_blk_start == 0)
 			wu->swu_blk_start = (strip_no / no_chunk) * row_size;
@@ -540,7 +504,7 @@ sr_raid6_rw(struct sr_workunit *wu)
 				break;
 			}
 		}
-		if (xs->flags & SCSI_DATA_IN) {	
+		if (xs->flags & SCSI_DATA_IN) {
 			if (!(fail & SR_FAILX)) {
 				/* drive is good. issue single read request */
 				if (sr_raid6_addio(wu, chunk, lba, length,
@@ -559,17 +523,17 @@ sr_raid6_rw(struct sr_workunit *wu)
 				    SCSI_DATA_IN, SR_CCBF_FREEBUF, NULL, data,
 				    gxinv))
 					goto bad;
-			
+
 				/* Read Dz * gz * inv(gx) */
 				for (i = 0; i < no_chunk+2; i++) {
-					if  (i == qchunk || i == pchunk || i == chunk) 
+					if  (i == qchunk || i == pchunk || i == chunk)
 						continue;
 
-					if (sr_raid6_addio(wu, i, lba, 
+					if (sr_raid6_addio(wu, i, lba,
 					   length, NULL, SCSI_DATA_IN,
 					   SR_CCBF_FREEBUF, NULL,
 					   data, gf_mul(gf_pow[i], gxinv)))
-					   	goto bad;
+						goto bad;
 				}
 
 				/* data will contain correct value on completion */
@@ -583,18 +547,18 @@ sr_raid6_rw(struct sr_workunit *wu)
 
 				/* read Q * inv(gx + gy) */
 				memset(data, 0, length);
-				if (sr_raid6_addio(wu, qchunk, lba, 
+				if (sr_raid6_addio(wu, qchunk, lba,
 				    length,  NULL, SCSI_DATA_IN,
 				    SR_CCBF_FREEBUF, NULL,
 				    data, gxinv))
-				    	goto bad;
+					goto bad;
 
 				/* read P * gy * inv(gx + gy) */
 				if (sr_raid6_addio(wu, pchunk, lba,
 				    length,  NULL, SCSI_DATA_IN,
 				    SR_CCBF_FREEBUF, NULL,
 				    data, pxinv))
-				    	goto bad;
+					goto bad;
 
 				/* Calculate: Dx*gx^Dy*gy = Q^(Dz*gz) ; Dx^Dy = P^Dz
 				 *   Q:  sr_raid6_xorp(qbuf, --, length);
@@ -612,29 +576,29 @@ sr_raid6_rw(struct sr_workunit *wu)
 					    length, NULL, SCSI_DATA_IN,
 					    SR_CCBF_FREEBUF, NULL, data,
 					    pxinv ^ gf_mul(gf_pow[i], gxinv)))
-					    	goto bad;
+						goto bad;
 				}
 			} else {
 				/* Two cases: single disk (Dx) or (Dx+Q)
-				 *   Dx = Dz ^ P (same as RAID5) 
+				 *   Dx = Dz ^ P (same as RAID5)
 				 */
 				printf("Disk %llx offline, "
-				    "regenerating Dx%s\n", chunk, 
+				    "regenerating Dx%s\n", chunk,
 				    fail & SR_FAILQ ? "+Q" : " single");
 
 				/* Calculate: Dx = P^Dz
- 				 *   P:  sr_raid6_xorp(data, ---, length); 
- 				 *   Dz: sr_raid6_xorp(data, ---, length); 
+				 *   P:  sr_raid6_xorp(data, ---, length);
+				 *   Dz: sr_raid6_xorp(data, ---, length);
 				 */
 				memset(data, 0, length);
 				for (i = 0; i < no_chunk+2; i++) {
 					if (i != chunk && i != qchunk) {
 						/* Read Dz */
-						if (sr_raid6_addio(wu, i, lba, 
+						if (sr_raid6_addio(wu, i, lba,
 						    length, NULL, SCSI_DATA_IN,
-						    SR_CCBF_FREEBUF, data, 
+						    SR_CCBF_FREEBUF, data,
 						    NULL, 0))
-	 				    	    	goto bad;
+							goto bad;
 					}
 				}
 
@@ -666,33 +630,33 @@ sr_raid6_rw(struct sr_workunit *wu)
 			sr_raid6_xorq(qbuf, data, length, gf_pow[chunk]);
 
 			/* Read old data: P ^= Dn' ; Q ^= (gn * Dn') */
-			if (sr_raid6_addio(wu, chunk, lba, length, NULL,
-				SCSI_DATA_IN, SR_CCBF_FREEBUF, pbuf, qbuf, 
+			if (sr_raid6_addio(wu_r, chunk, lba, length, NULL,
+				SCSI_DATA_IN, SR_CCBF_FREEBUF, pbuf, qbuf,
 				gf_pow[chunk]))
 				goto bad;
 
 			/* Read old xor-parity: P ^= P' */
-			if (sr_raid6_addio(wu, pchunk, lba, length, NULL,
+			if (sr_raid6_addio(wu_r, pchunk, lba, length, NULL,
 				SCSI_DATA_IN, SR_CCBF_FREEBUF, pbuf, NULL, 0))
 				goto bad;
 
 			/* Read old q-parity: Q ^= Q' */
-			if (sr_raid6_addio(wu, qchunk, lba, length, NULL,
+			if (sr_raid6_addio(wu_r, qchunk, lba, length, NULL,
 				SCSI_DATA_IN, SR_CCBF_FREEBUF, qbuf, NULL, 0))
 				goto bad;
 
 			/* write new data */
-			if (sr_raid6_addio(wu_w, chunk, lba, length, data,
+			if (sr_raid6_addio(wu, chunk, lba, length, data,
 			    xs->flags, 0, NULL, NULL, 0))
 				goto bad;
 
 			/* write new xor-parity */
-			if (sr_raid6_addio(wu_w, pchunk, lba, length, pbuf,
+			if (sr_raid6_addio(wu, pchunk, lba, length, pbuf,
 			    xs->flags, SR_CCBF_FREEBUF, NULL, NULL, 0))
 				goto bad;
 
 			/* write new q-parity */
-			if (sr_raid6_addio(wu_w, qchunk, lba, length, qbuf,
+			if (sr_raid6_addio(wu, qchunk, lba, length, qbuf,
 			    xs->flags, SR_CCBF_FREEBUF, NULL, NULL, 0))
 				goto bad;
 		}
@@ -704,21 +668,16 @@ sr_raid6_rw(struct sr_workunit *wu)
 	}
 
 	s = splbio();
-	if (wu_w) {
+	if (wu_r) {
 		/* collide write request with reads */
-		wu_w->swu_blk_start = wu->swu_blk_start;
-		wu_w->swu_blk_end = wu->swu_blk_end;
+		wu_r->swu_blk_start = wu->swu_blk_start;
+		wu_r->swu_blk_end = wu->swu_blk_end;
 
-		/*
-		 * put xs block in write request (scsi_done not called till
-		 * write completes)
-		 */
-		wu_w->swu_xs = wu->swu_xs;
-		wu->swu_xs = NULL;
+		wu->swu_state = SR_WU_DEFERRED;
+		wu_r->swu_collider = wu;
+		TAILQ_INSERT_TAIL(&sd->sd_wu_defq, wu, swu_link);
 
-		wu_w->swu_state = SR_WU_DEFERRED;
-		wu->swu_collider = wu_w;
-		TAILQ_INSERT_TAIL(&sd->sd_wu_defq, wu_w, swu_link);
+		wu = wu_r;
 	}
 
 	/* rebuild io, let rebuild routine deal with it */
@@ -743,8 +702,8 @@ queued:
 	return (0);
 bad:
 	/* wu is unwound by sr_wu_put */
-	if (wu_w)
-		sr_wu_put(wu_w);
+	if (wu_r)
+		scsi_io_put(&sd->sd_iopool, wu_r);
 	return (1);
 }
 
@@ -759,7 +718,7 @@ sr_failio(struct sr_workunit *wu)
 		return (0);
 
 	/* Wu is a 'fake'.. don't do real I/O just intr */
-	TAILQ_INSERT_TAIL(&sd->sd_wu_pendq, wu, swu_link);	
+	TAILQ_INSERT_TAIL(&sd->sd_wu_pendq, wu, swu_link);
 	TAILQ_FOREACH(ccb, &wu->swu_ccb, ccb_link)
 		sr_raid6_intr(&ccb->ccb_buf);
 	return (1);
@@ -818,7 +777,7 @@ sr_raid6_intr(struct buf *bp)
 
 	/* free allocated data buffer */
 	if (ccb->ccb_flag & SR_CCBF_FREEBUF) {
-		sr_put_block(sd, ccb->ccb_buf.b_data);
+		sr_put_block(sd, ccb->ccb_buf.b_data, ccb->ccb_buf.b_bcount);
 		ccb->ccb_buf.b_data = NULL;
 	}
 	wu->swu_ios_complete++;
@@ -889,10 +848,10 @@ sr_raid6_intr(struct buf *bp)
 				wakeup(wu);
 			}
 		} else {
-			/* do not change the order of these 2 functions */
-			sr_wu_put(wu);
 			if (xs != NULL)
 				scsi_done(xs);
+			else
+				scsi_io_put(&sd->sd_iopool, wu);
 		}
 
 		if (sd->sd_sync && sd->sd_wu_pending == 0)
@@ -908,8 +867,6 @@ bad:
 		wu->swu_flags |= SR_WUF_REBUILDIOCOMP;
 		wakeup(wu);
 	} else {
-		/* do not change the order of these 2 functions */
-		sr_wu_put(wu);
 		scsi_done(xs);
 	}
 
@@ -946,7 +903,7 @@ int
 sr_raid6_addio(struct sr_workunit *wu, int dsk, daddr64_t blk, daddr64_t len,
     void *data, int flag, int ccbflag, void *pbuf, void *qbuf, int gn)
 {
-	struct sr_discipline 	*sd = wu->swu_dis;
+	struct sr_discipline	*sd = wu->swu_dis;
 	struct sr_ccb		*ccb;
 	struct sr_raid6_opaque  *pqbuf;
 
@@ -999,7 +956,7 @@ sr_raid6_addio(struct sr_workunit *wu, int dsk, daddr64_t blk, daddr64_t len,
 		if (qbuf && gf_premul(gn))
 			return (-1);
 
-		pqbuf = malloc(sizeof(struct sr_raid6_opaque), M_DEVBUF, M_CANFAIL);
+		pqbuf = malloc(sizeof(struct sr_raid6_opaque), M_DEVBUF, M_ZERO | M_NOWAIT);
 		if (pqbuf == NULL) {
 			sr_ccb_put(ccb);
 			return (-1);
@@ -1029,22 +986,27 @@ sr_raid6_addio(struct sr_workunit *wu, int dsk, daddr64_t blk, daddr64_t len,
 void
 sr_raid6_xorp(void *p, void *d, int len)
 {
-	uint8_t *pbuf = p, *data = d;
+	uint32_t *pbuf = p, *data = d;
 
+	len >>= 2;
 	while (len--)
-		pbuf[len] ^= data[len];
+		*pbuf++ ^= *data++;
 }
 
 void
 sr_raid6_xorq(void *q, void *d, int len, int gn)
 {
-	uint8_t		*qbuf = q, *data = d;
-	uint8_t		*gn_map = gf_map[gn];
+	uint32_t 	*qbuf = q, *data = d, x;
+	uint8_t	 	*gn_map = gf_map[gn];
 
-	/* Have to do this a byte at a time */
-	/* Faster multiply.. gn is always constant */
-	while (len--)
-		qbuf[len] ^= gn_map[data[len]];
+	len >>= 2;
+	while (len--) {
+		x = *data++;
+		*qbuf++ ^= (((uint32_t)gn_map[x & 0xff]) |
+		  	    ((uint32_t)gn_map[(x >> 8) & 0xff] << 8) |
+			    ((uint32_t)gn_map[(x >> 16) & 0xff] << 16) |
+			    ((uint32_t)gn_map[(x >> 24) & 0xff] << 24));
+	}
 }
 
 /* Create GF256 log/pow tables: polynomial = 0x11D */
@@ -1084,7 +1046,7 @@ gf_premul(uint8_t gn)
 	if (gf_map[gn] != NULL)
 		return (0);
 
-	if ((gf_map[gn] = malloc(256, M_DEVBUF, M_CANFAIL)) == NULL)
+	if ((gf_map[gn] = malloc(256, M_DEVBUF, M_ZERO | M_NOWAIT)) == NULL)
 		return (-1);
 
 	for (i=0; i<256; i++)

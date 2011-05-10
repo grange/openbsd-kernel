@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcp_input.c,v 1.240 2011/01/07 17:50:42 bluhm Exp $	*/
+/*	$OpenBSD: tcp_input.c,v 1.249 2011/05/04 08:20:05 blambert Exp $	*/
 /*	$NetBSD: tcp_input.c,v 1.23 1996/02/13 23:43:44 christos Exp $	*/
 
 /*
@@ -108,6 +108,7 @@
 struct	tcpiphdr tcp_saveti;
 
 int tcp_mss_adv(struct ifnet *, int);
+int tcp_flush_queue(struct tcpcb *);
 
 #ifdef INET6
 #include <netinet6/in6_var.h>
@@ -189,6 +190,9 @@ do { \
 		TCP_SET_DELACK(tp); \
 } while (0)
 
+void syn_cache_put(struct syn_cache *);
+void syn_cache_rm(struct syn_cache *);
+
 /*
  * Insert segment ti into reassembly queue of tcp with
  * control block tp.  Return TH_FIN if reassembly now includes
@@ -204,15 +208,6 @@ int
 tcp_reass(struct tcpcb *tp, struct tcphdr *th, struct mbuf *m, int *tlen)
 {
 	struct tcpqent *p, *q, *nq, *tiqe;
-	struct socket *so = tp->t_inpcb->inp_socket;
-	int flags;
-
-	/*
-	 * Call with th==0 after become established to
-	 * force pre-ESTABLISHED data up to user socket.
-	 */
-	if (th == 0)
-		goto present;
 
 	/*
 	 * Allocate a new queue entry, before we throw away any data.
@@ -302,7 +297,19 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, struct mbuf *m, int *tlen)
 		TAILQ_INSERT_AFTER(&tp->t_segq, p, tiqe, tcpqe_q);
 	}
 
-present:
+	if (th->th_seq != tp->rcv_nxt)
+		return (0);
+
+	return (tcp_flush_queue(tp));
+}
+
+int
+tcp_flush_queue(struct tcpcb *tp)
+{
+	struct socket *so = tp->t_inpcb->inp_socket;
+	struct tcpqent *q, *nq;
+	int flags;
+
 	/*
 	 * Present data to user, advancing rcv_nxt through
 	 * completed sequence space.
@@ -470,7 +477,8 @@ tcp_input(struct mbuf *m, ...)
 	case AF_INET:
 		ip = mtod(m, struct ip *);
 		if (IN_MULTICAST(ip->ip_dst.s_addr) ||
-		    in_broadcast(ip->ip_dst, m->m_pkthdr.rcvif))
+		    in_broadcast(ip->ip_dst, m->m_pkthdr.rcvif,
+		    m->m_pkthdr.rdomain))
 			goto drop;
 #ifdef TCP_ECN
 		/* save ip_tos before clearing it for checksum */
@@ -725,62 +733,69 @@ findpcb:
 			}
 		}
 		if (so->so_options & SO_ACCEPTCONN) {
-			if ((tiflags & (TH_RST|TH_ACK|TH_SYN)) != TH_SYN) {
-				if (tiflags & TH_RST) {
-					syn_cache_reset(&src.sa, &dst.sa, th,
-					    inp->inp_rtableid);
-				} else if ((tiflags & (TH_ACK|TH_SYN)) ==
-				    (TH_ACK|TH_SYN)) {
+			switch (tiflags & (TH_RST|TH_SYN|TH_ACK)) {
+
+			case TH_SYN|TH_ACK|TH_RST:
+			case TH_SYN|TH_RST:
+			case TH_ACK|TH_RST:
+			case TH_RST:
+				syn_cache_reset(&src.sa, &dst.sa, th,
+				    inp->inp_rtableid);
+				goto drop;
+
+			case TH_SYN|TH_ACK:
+				/*
+				 * Received a SYN,ACK.  This should
+				 * never happen while we are in
+				 * LISTEN.  Send an RST.
+				 */
+				goto badsyn;
+
+			case TH_ACK:
+				so = syn_cache_get(&src.sa, &dst.sa,
+					th, iphlen, tlen, so, m);
+				if (so == NULL) {
 					/*
-					 * Received a SYN,ACK.  This should
-					 * never happen while we are in
-					 * LISTEN.  Send an RST.
+					 * We don't have a SYN for
+					 * this ACK; send an RST.
 					 */
 					goto badsyn;
-				} else if (tiflags & TH_ACK) {
-					so = syn_cache_get(&src.sa, &dst.sa,
-						th, iphlen, tlen, so, m);
-					if (so == NULL) {
-						/*
-						 * We don't have a SYN for
-						 * this ACK; send an RST.
-						 */
-						goto badsyn;
-					} else if (so ==
-					    (struct socket *)(-1)) {
-						/*
-						 * We were unable to create
-						 * the connection.  If the
-						 * 3-way handshake was
-						 * completed, and RST has
-						 * been sent to the peer.
-						 * Since the mbuf might be
-						 * in use for the reply,
-						 * do not free it.
-						 */
-						m = NULL;
-					} else {
-						/*
-						 * We have created a
-						 * full-blown connection.
-						 */
-						tp = NULL;
-						inp = (struct inpcb *)so->so_pcb;
-						tp = intotcpcb(inp);
-						if (tp == NULL)
-							goto badsyn;	/*XXX*/
-
-						goto after_listen;
-					}
+				} else if (so == (struct socket *)(-1)) {
+					/*
+					 * We were unable to create
+					 * the connection.  If the
+					 * 3-way handshake was
+					 * completed, and RST has
+					 * been sent to the peer.
+					 * Since the mbuf might be
+					 * in use for the reply,
+					 * do not free it.
+					 */
+					m = NULL;
+					goto drop;
 				} else {
 					/*
-					 * None of RST, SYN or ACK was set.
-					 * This is an invalid packet for a
-					 * TCB in LISTEN state.  Send a RST.
+					 * We have created a
+					 * full-blown connection.
 					 */
-					goto badsyn;
+					tp = NULL;
+					inp = (struct inpcb *)so->so_pcb;
+					tp = intotcpcb(inp);
+					if (tp == NULL)
+						goto badsyn;	/*XXX*/
+
 				}
-			} else {
+				break;
+
+			default:
+				/*
+				 * None of RST, SYN or ACK was set.
+				 * This is an invalid packet for a
+				 * TCB in LISTEN state.  Send a RST.
+				 */
+				goto badsyn;
+
+			case TH_SYN:
 				/*
 				 * Received a SYN.
 				 */
@@ -861,16 +876,15 @@ findpcb:
 				 * SYN looks ok; create compressed TCP
 				 * state for it.
 				 */
-				if (so->so_qlen <= so->so_qlimit &&
+				if (so->so_qlen > so->so_qlimit ||
 				    syn_cache_add(&src.sa, &dst.sa, th, iphlen,
-				    so, m, optp, optlen, &opti, reuse))
-					m = NULL;
+				    so, m, optp, optlen, &opti, reuse) == -1)
+					goto drop;
+				return;
 			}
-			goto drop;
 		}
 	}
 
-after_listen:
 #ifdef DIAGNOSTIC
 	/*
 	 * Should not happen now that all embryonic connections
@@ -881,7 +895,8 @@ after_listen:
 #endif
 
 #if NPF > 0
-	if (m->m_pkthdr.pf.statekey) {
+	if (m->m_pkthdr.pf.statekey && !inp->inp_pf_sk &&
+	    !((struct pf_state_key *)m->m_pkthdr.pf.statekey)->inp) {
 		((struct pf_state_key *)m->m_pkthdr.pf.statekey)->inp = inp;
 		inp->inp_pf_sk = m->m_pkthdr.pf.statekey;
 	}
@@ -1252,10 +1267,9 @@ after_listen:
 		 * peer is ECN capable.
 		 */
 		if (tcp_do_ecn) {
-			if ((tiflags & (TH_ACK|TH_ECE|TH_CWR))
-			    == (TH_ACK|TH_ECE) ||
-			    (tiflags & (TH_ACK|TH_ECE|TH_CWR))
-			    == (TH_ECE|TH_CWR)) {
+			switch (tiflags & (TH_ACK|TH_ECE|TH_CWR)) {
+			case TH_ACK|TH_ECE:
+			case TH_ECE|TH_CWR:
 				tp->t_flags |= TF_ECN_PERMIT;
 				tiflags &= ~(TH_ECE|TH_CWR);
 				tcpstat.tcps_ecn_accepts++;
@@ -1274,8 +1288,8 @@ after_listen:
 				tp->snd_scale = tp->requested_s_scale;
 				tp->rcv_scale = tp->request_r_scale;
 			}
-			(void) tcp_reass(tp, (struct tcphdr *)0,
-				(struct mbuf *)0, &tlen);
+			tcp_flush_queue(tp);
+
 			/*
 			 * if we didn't have to retransmit the SYN,
 			 * use its rtt as our initial srtt & rtt var.
@@ -1325,6 +1339,19 @@ trimthenstep6:
 		    ((opti.ts_present &&
 		    TSTMP_LT(tp->ts_recent, opti.ts_val)) ||
 		    SEQ_GT(th->th_seq, tp->rcv_nxt))) {
+#if NPF > 0
+			/*
+			 * The socket will be recreated but the new state
+			 * has already been linked to the socket.  Remove the
+			 * link between old socket and new state.  Otherwise
+			 * closing the socket would remove the state.
+			 */
+			if (inp->inp_pf_sk) {
+				((struct pf_state_key *)inp->inp_pf_sk)->inp =
+				    NULL;
+				inp->inp_pf_sk = NULL;
+			}
+#endif
 			/*
 			* Advance the iss by at least 32768, but
 			* clear the msb in order to make sure
@@ -1552,8 +1579,7 @@ trimthenstep6:
 			tp->rcv_scale = tp->request_r_scale;
 			tiwin = th->th_win << tp->snd_scale;
 		}
-		(void) tcp_reass(tp, (struct tcphdr *)0, (struct mbuf *)0,
-				 &tlen);
+		tcp_flush_queue(tp);
 		tp->snd_wl1 = th->th_seq - 1;
 		/* fall into ... */
 
@@ -2251,12 +2277,12 @@ dropwithreset:
 		goto drop;
 	if (tiflags & TH_ACK) {
 		tcp_respond(tp, mtod(m, caddr_t), th, (tcp_seq)0, th->th_ack,
-		    TH_RST, 0);
+		    TH_RST, m->m_pkthdr.rdomain);
 	} else {
 		if (tiflags & TH_SYN)
 			tlen++;
 		tcp_respond(tp, mtod(m, caddr_t), th, th->th_seq + tlen,
-		    (tcp_seq)0, TH_RST|TH_ACK, 0);
+		    (tcp_seq)0, TH_RST|TH_ACK, m->m_pkthdr.rdomain);
 	}
 	m_freem(m);
 	return;
@@ -3351,27 +3377,29 @@ do {									\
 } while (/*CONSTCOND*/0)
 #endif /* INET6 */
 
-#define	SYN_CACHE_RM(sc)						\
-do {									\
-	(sc)->sc_flags |= SCF_DEAD;					\
-	TAILQ_REMOVE(&tcp_syn_cache[(sc)->sc_bucketidx].sch_bucket,	\
-	    (sc), sc_bucketq);						\
-	(sc)->sc_tp = NULL;						\
-	LIST_REMOVE((sc), sc_tpq);					\
-	tcp_syn_cache[(sc)->sc_bucketidx].sch_length--;			\
-	timeout_del(&(sc)->sc_timer);					\
-	syn_cache_count--;						\
-} while (/*CONSTCOND*/0)
+void
+syn_cache_rm(struct syn_cache *sc)
+{
+	sc->sc_flags |= SCF_DEAD;
+	TAILQ_REMOVE(&tcp_syn_cache[sc->sc_bucketidx].sch_bucket,
+	    sc, sc_bucketq);
+	sc->sc_tp = NULL;
+	LIST_REMOVE(sc, sc_tpq);
+	tcp_syn_cache[sc->sc_bucketidx].sch_length--;
+	timeout_del(&sc->sc_timer);
+	syn_cache_count--;
+}
 
-#define	SYN_CACHE_PUT(sc)						\
-do {									\
-	if ((sc)->sc_ipopts)						\
-		(void) m_free((sc)->sc_ipopts);				\
-	if ((sc)->sc_route4.ro_rt != NULL)				\
-		RTFREE((sc)->sc_route4.ro_rt);				\
-	timeout_set(&(sc)->sc_timer, syn_cache_reaper, (sc));		\
-	timeout_add(&(sc)->sc_timer, 0);				\
-} while (/*CONSTCOND*/0)
+void
+syn_cache_put(struct syn_cache *sc)
+{
+	if (sc->sc_ipopts)
+		(void) m_free(sc->sc_ipopts);
+	if (sc->sc_route4.ro_rt != NULL)
+		RTFREE(sc->sc_route4.ro_rt);
+	timeout_set(&sc->sc_timer, syn_cache_reaper, sc);
+	timeout_add(&sc->sc_timer, 0);
+}
 
 struct pool syn_cache_pool;
 
@@ -3445,8 +3473,8 @@ syn_cache_insert(struct syn_cache *sc, struct tcpcb *tp)
 		if (sc2 == NULL)
 			panic("syn_cache_insert: bucketoverflow: impossible");
 #endif
-		SYN_CACHE_RM(sc2);
-		SYN_CACHE_PUT(sc2);
+		syn_cache_rm(sc2);
+		syn_cache_put(sc2);
 	} else if (syn_cache_count >= tcp_syn_cache_limit) {
 		struct syn_cache_head *scp2, *sce;
 
@@ -3479,8 +3507,8 @@ syn_cache_insert(struct syn_cache *sc, struct tcpcb *tp)
 #endif
 		}
 		sc2 = TAILQ_FIRST(&scp2->sch_bucket);
-		SYN_CACHE_RM(sc2);
-		SYN_CACHE_PUT(sc2);
+		syn_cache_rm(sc2);
+		syn_cache_put(sc2);
 	}
 
 	/*
@@ -3545,8 +3573,8 @@ syn_cache_timer(void *arg)
 
  dropit:
 	tcpstat.tcps_sc_timed_out++;
-	SYN_CACHE_RM(sc);
-	SYN_CACHE_PUT(sc);
+	syn_cache_rm(sc);
+	syn_cache_put(sc);
 	splx(s);
 }
 
@@ -3582,8 +3610,8 @@ syn_cache_cleanup(struct tcpcb *tp)
 		if (sc->sc_tp != tp)
 			panic("invalid sc_tp in syn_cache_cleanup");
 #endif
-		SYN_CACHE_RM(sc);
-		SYN_CACHE_PUT(sc);
+		syn_cache_rm(sc);
+		syn_cache_put(sc);
 	}
 	/* just for safety */
 	LIST_INIT(&tp->t_sc);
@@ -3657,6 +3685,9 @@ syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 	struct mbuf *am;
 	int s;
 	struct socket *oso;
+#if NPF > 0
+	struct pf_divert *divert = NULL;
+#endif
 
 	s = splsoftnet();
 	if ((sc = syn_cache_lookup(src, dst, &scp,
@@ -3678,7 +3709,7 @@ syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 	}
 
 	/* Remove this cache entry */
-	SYN_CACHE_RM(sc);
+	syn_cache_rm(sc);
 	splx(s);
 
 	/*
@@ -3740,6 +3771,12 @@ syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 	inp = (struct inpcb *)so->so_pcb;
 #endif /* INET6 */
 
+#if NPF > 0
+	if (m && m->m_pkthdr.pf.flags & PF_TAG_DIVERTED &&
+	    (divert = pf_find_divert(m)) != NULL)
+		inp->inp_rtableid = divert->rdomain;
+	else
+#endif
 	/* inherit rtable from listening socket */
 	inp->inp_rtableid = sc->sc_rtableid;
 
@@ -3877,7 +3914,7 @@ syn_cache_get(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 	tp->last_ack_sent = tp->rcv_nxt;
 
 	tcpstat.tcps_sc_completed++;
-	SYN_CACHE_PUT(sc);
+	syn_cache_put(sc);
 	return (so);
 
 resetandabort:
@@ -3887,7 +3924,7 @@ resetandabort:
 abort:
 	if (so != NULL)
 		(void) soabort(so);
-	SYN_CACHE_PUT(sc);
+	syn_cache_put(sc);
 	tcpstat.tcps_sc_aborted++;
 	return ((struct socket *)(-1));
 }
@@ -3915,10 +3952,10 @@ syn_cache_reset(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 		splx(s);
 		return;
 	}
-	SYN_CACHE_RM(sc);
+	syn_cache_rm(sc);
 	splx(s);
 	tcpstat.tcps_sc_reset++;
-	SYN_CACHE_PUT(sc);
+	syn_cache_put(sc);
 }
 
 void
@@ -3954,10 +3991,10 @@ syn_cache_unreach(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 		return;
 	}
 
-	SYN_CACHE_RM(sc);
+	syn_cache_rm(sc);
 	splx(s);
 	tcpstat.tcps_sc_unreach++;
-	SYN_CACHE_PUT(sc);
+	syn_cache_put(sc);
 }
 
 /*
@@ -4018,7 +4055,7 @@ syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 		tb.t_state = TCPS_LISTEN;
 		if (tcp_dooptions(&tb, optp, optlen, th, m, iphlen, oi,
 		    sotoinpcb(so)->inp_rtableid))
-			return (0);
+			return (-1);
 	} else
 		tb.t_flags = 0;
 
@@ -4057,14 +4094,14 @@ syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 			tcpstat.tcps_sndacks++;
 			tcpstat.tcps_sndtotal++;
 		}
-		return (1);
+		return (0);
 	}
 
 	sc = pool_get(&syn_cache_pool, PR_NOWAIT|PR_ZERO);
 	if (sc == NULL) {
 		if (ipopts)
 			(void) m_free(ipopts);
-		return (0);
+		return (-1);
 	}
 
 	/*
@@ -4146,10 +4183,11 @@ syn_cache_add(struct sockaddr *src, struct sockaddr *dst, struct tcphdr *th,
 		tcpstat.tcps_sndacks++;
 		tcpstat.tcps_sndtotal++;
 	} else {
-		SYN_CACHE_PUT(sc);
+		syn_cache_put(sc);
 		tcpstat.tcps_sc_dropped++;
 	}
-	return (1);
+
+	return (0);
 }
 
 int

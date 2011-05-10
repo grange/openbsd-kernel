@@ -1,4 +1,4 @@
-/*	$OpenBSD: intr.h,v 1.12 2008/06/26 05:42:13 ray Exp $	*/
+/*	$OpenBSD: intr.h,v 1.14 2011/03/23 17:02:33 deraadt Exp $	*/
 /*	$NetBSD: intr.h,v 1.8 2001/01/14 23:50:30 thorpej Exp $ */
 
 /*-
@@ -30,12 +30,10 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef _SPARC64_INTR_H_
-#define _SPARC64_INTR_H_
+#ifndef _MACHINE_INTR_H_
+#define _MACHINE_INTR_H_
 
-#ifndef _SPARC64_INTREG_H_
 #include <sparc64/sparc64/intreg.h>
-#endif
 
 #include <sys/evcount.h>
 
@@ -87,4 +85,4 @@ void	*softintr_establish(int, void (*)(void *), void *);
 void	 softintr_disestablish(void *);
 void	 softintr_schedule(void *);
 
-#endif /* _SPARC64_INTR_H_ */
+#endif /* _MACHINE_INTR_H_ */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: uvm_map.c,v 1.131 2010/12/24 21:49:04 tedu Exp $	*/
+/*	$OpenBSD: uvm_map.c,v 1.135 2011/04/26 23:50:21 ariane Exp $	*/
 /*	$NetBSD: uvm_map.c,v 1.86 2000/11/27 08:40:03 chs Exp $	*/
 
 /* 
@@ -396,7 +396,7 @@ uvm_mapent_alloc(struct vm_map *map, int flags)
 {
 	struct vm_map_entry *me, *ne;
 	int s, i;
-	int slowdown, pool_flags;
+	int pool_flags;
 	UVMHIST_FUNC("uvm_mapent_alloc"); UVMHIST_CALLED(maphist);
 
 	pool_flags = PR_WAITOK;
@@ -408,7 +408,8 @@ uvm_mapent_alloc(struct vm_map *map, int flags)
 		simple_lock(&uvm.kentry_lock);
 		me = uvm.kentry_free;
 		if (me == NULL) {
-			ne = uvm_km_getpage(0, &slowdown);
+			ne = km_alloc(PAGE_SIZE, &kv_page, &kp_dirty,
+			    &kd_nowait);
 			if (ne == NULL)
 				panic("uvm_mapent_alloc: cannot allocate map "
 				    "entry");
@@ -742,6 +743,14 @@ uvm_map_p(struct vm_map *map, vaddr_t *startp, vsize_t size,
 	UVMHIST_LOG(maphist, "(map=%p, *startp=0x%lx, size=%ld, flags=0x%lx)",
 	    map, *startp, size, flags);
 	UVMHIST_LOG(maphist, "  uobj/offset %p/%ld", uobj, (u_long)uoffset,0,0);
+
+	/*
+	 * Holes are incompatible with other types of mappings.
+	 */
+	if (flags & UVM_FLAG_HOLE) {
+		KASSERT(uobj == NULL && (flags & UVM_FLAG_FIXED) != 0 &&
+		    (flags & (UVM_FLAG_OVERLAY | UVM_FLAG_COPYONW)) == 0);
+	}
 
 #ifdef KVA_GUARDPAGES
 	if (map == kernel_map && !(flags & UVM_FLAG_FIXED)) {

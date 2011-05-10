@@ -1,4 +1,4 @@
-/*	$OpenBSD: cpu.c,v 1.36 2010/11/24 21:16:28 miod Exp $ */
+/*	$OpenBSD: cpu.c,v 1.39 2011/04/10 17:16:51 miod Exp $ */
 
 /*
  * Copyright (c) 1997-2004 Opsycon AB (www.opsycon.se)
@@ -55,7 +55,7 @@ struct cfattach cpu_ca = {
 	sizeof(struct device), cpumatch, cpuattach
 };
 struct cfdriver cpu_cd = {
-	NULL, "cpu", DV_DULL, NULL, 0
+	NULL, "cpu", DV_DULL,
 };
 
 int
@@ -166,7 +166,20 @@ cpuattach(struct device *parent, struct device *dev, void *aux)
 		printf("PMC-Sierra RM9000 CPU");
 		break;
 	case MIPS_LOONGSON2:
-		printf("STC Loongson2%c CPU", 'C' + vers_min);
+		switch (ch->c0prid & 0xff) {
+		case 0x00:
+		case 0x02:
+		case 0x03:
+			printf("STC Loongson2%c CPU", 'C' + vers_min);
+			break;
+		case 0x05:
+			printf("STC Loongson3%c CPU", 'A' + vers_min - 5);
+			break;
+		default:
+			printf("Unknown STC Loongson CPU type (%02x)",
+			    ch->c0prid & 0xff);
+			break;
+		}
 		displayver = 0;
 		break;
 	case MIPS_OCTEON:
@@ -421,7 +434,7 @@ alloc_contiguous_pages(size_t size)
 	error = uvm_pglistalloc(roundup(size, USPACE), 0, 0xffffffff, 0, 0,
 		&mlist, 1, UVM_PLA_NOWAIT | UVM_PLA_ZERO);
 	if (error)
-		return NULL;
+		return 0;
 	m = TAILQ_FIRST(&mlist);
 	pa = VM_PAGE_TO_PHYS(m);
 

@@ -528,7 +528,7 @@ inteldrm_detach(struct device *self, int flags)
 		dev_priv->hw_status_page = NULL;
 	}
 
-	if (IS_I9XX(dev_priv) && dev_priv->ifp.i9xx.bsh != NULL) {
+	if (IS_I9XX(dev_priv) && dev_priv->ifp.i9xx.bsh != 0) {
 		bus_space_unmap(dev_priv->ifp.i9xx.bst, dev_priv->ifp.i9xx.bsh,
 		    PAGE_SIZE);
 	} else if (dev_priv->flags & (CHIP_I830 | CHIP_I845G | CHIP_I85X |
@@ -944,7 +944,7 @@ i915_alloc_ifp(struct inteldrm_softc *dev_priv, struct pci_attach_args *bpa)
 	return;
 
 nope:
-	dev_priv->ifp.i9xx.bsh = NULL;
+	dev_priv->ifp.i9xx.bsh = 0;
 	printf(": no ifp ");
 }
 
@@ -979,7 +979,7 @@ i965_alloc_ifp(struct inteldrm_softc *dev_priv, struct pci_attach_args *bpa)
 	return;
 
 nope:
-	dev_priv->ifp.i9xx.bsh = NULL;
+	dev_priv->ifp.i9xx.bsh = 0;
 	printf(": no ifp ");
 }
 
@@ -991,21 +991,23 @@ inteldrm_chipset_flush(struct inteldrm_softc *dev_priv)
 	 * The write will return when it is done.
 	 */
 	if (IS_I9XX(dev_priv)) {
-	    if (dev_priv->ifp.i9xx.bsh != NULL)
+	    if (dev_priv->ifp.i9xx.bsh != 0)
 		bus_space_write_4(dev_priv->ifp.i9xx.bst,
 		    dev_priv->ifp.i9xx.bsh, 0, 1);
 	} else {
-		/*
-		 * I8XX don't have a flush page mechanism, but do have the
-		 * cache. Do it the bruteforce way. we write 1024 byes into
-		 * the cache, then clflush them out so they'll kick the stuff
-		 * we care about out of the chipset cache.
-		 */
-		if (dev_priv->ifp.i8xx.kva != NULL) {
-			memset(dev_priv->ifp.i8xx.kva, 0, 1024);
-			agp_flush_cache_range((vaddr_t)dev_priv->ifp.i8xx.kva,
-			    1024);
+		int i;
+
+		wbinvd();
+
+#define I830_HIC        0x70
+
+		I915_WRITE(I830_HIC, (I915_READ(I830_HIC) | (1<<31)));
+		for (i = 1000; i; i--) {
+			if (!(I915_READ(I830_HIC) & (1<<31)))
+				break;
+			delay(100);
 		}
+
 	}
 }
 
@@ -3919,6 +3921,10 @@ i915_gem_idle(struct inteldrm_softc *dev_priv)
 {
 	struct drm_device	*dev = (struct drm_device *)dev_priv->drmdev;
 	int			 ret;
+
+	/* If drm attach failed */
+	if (dev == NULL)
+		return (0);
 
 	DRM_LOCK();
 	if (dev_priv->mm.suspended || dev_priv->ring.ring_obj == NULL) {

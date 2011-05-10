@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.s,v 1.130 2010/07/03 04:54:32 kettenis Exp $	*/
+/*	$OpenBSD: locore.s,v 1.135 2011/05/10 11:11:56 kettenis Exp $	*/
 /*	$NetBSD: locore.s,v 1.145 1996/05/03 19:41:19 christos Exp $	*/
 
 /*-
@@ -52,9 +52,6 @@
 #endif
 #ifdef COMPAT_LINUX
 #include <compat/linux/linux_syscall.h>
-#endif
-#ifdef COMPAT_FREEBSD
-#include <compat/freebsd/freebsd_syscall.h>
 #endif
 
 #include <machine/cputypes.h>
@@ -112,6 +109,7 @@
 	movl	$GSEL(GDATA_SEL, SEL_KPL),%eax	; \
 	movw	%ax,%ds		; \
 	movw	%ax,%es		; \
+	xorl	%eax,%eax	; /* $GSEL(GNULL_SEL, SEL_KPL) == 0 */ \
 	movw	%ax,%gs		; \
 	pushl	%fs		; \
 	movl	$GSEL(GCPU_SEL, SEL_KPL),%eax	; \
@@ -128,7 +126,6 @@
 	popl	%edx		; \
 	popl	%ecx		; \
 	popl	%eax		; \
-	sti			; \
 	addl	$8,%esp		; \
 	iret
 
@@ -530,11 +527,7 @@ try586:	/* Use the `cpuid' instruction. */
 	movl	%edx,%ecx
 	subl	%eax,%ecx
 	shrl	$PGSHIFT,%ecx
-#ifdef DDB
-	orl	$(PG_V|PG_KW),%eax
-#else
 	orl	$(PG_V|PG_KR),%eax
-#endif
 	fillkpt
 
 	/* Map the data, BSS, and bootstrap tables read-write. */
@@ -686,26 +679,6 @@ NENTRY(linux_sigcode)
 	int	$0x80			# exit if sigreturn fails
 	.globl	_C_LABEL(linux_esigcode)
 _C_LABEL(linux_esigcode):
-#endif
-
-/*****************************************************************************/
-
-#ifdef COMPAT_FREEBSD
-/*
- * Signal trampoline; copied to top of user stack.
- */
-NENTRY(freebsd_sigcode)
-	call	*FREEBSD_SIGF_HANDLER(%esp)
-	leal	FREEBSD_SIGF_SC(%esp),%eax # scp (the call may have clobbered
-					# the copy at SIGF_SCP(%esp))
-	pushl	%eax
-	pushl	%eax			# junk to fake return address
-	movl	$FREEBSD_SYS_sigreturn,%eax
-	int	$0x80			# enter kernel with args on stack
-	movl	$FREEBSD_SYS_exit,%eax
-	int	$0x80			# exit if sigreturn fails
-	.globl	_C_LABEL(freebsd_esigcode)
-_C_LABEL(freebsd_esigcode):
 #endif
 
 /*****************************************************************************/
@@ -1488,6 +1461,7 @@ IDTVEC(align)
  * This will cause the process to get a SIGBUS.
  */
 NENTRY(resume_iret)
+	sti
 	ZTRAP(T_PROTFLT)
 NENTRY(resume_pop_ds)
 	pushl	%es
@@ -1495,7 +1469,7 @@ NENTRY(resume_pop_ds)
 	movw	%ax,%es
 NENTRY(resume_pop_es)
 	pushl	%gs
-	movl	$GSEL(GDATA_SEL, SEL_KPL),%eax
+	xorl	%eax,%eax	/* $GSEL(GNULL_SEL, SEL_KPL) == 0 */
 	movw	%ax,%gs
 NENTRY(resume_pop_gs)
 	pushl	%fs
@@ -1503,6 +1477,7 @@ NENTRY(resume_pop_gs)
 	movw	%ax,%fs
 NENTRY(resume_pop_fs)
 	movl	$T_PROTFLT,TF_TRAPNO(%esp)
+	sti
 	jmp	calltrap
 
 NENTRY(alltraps)

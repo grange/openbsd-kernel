@@ -1,4 +1,4 @@
-/*	$OpenBSD: pmap.h,v 1.4 2010/12/26 15:40:59 miod Exp $	*/
+/*	$OpenBSD: pmap.h,v 1.6 2011/05/07 15:27:01 oga Exp $	*/
 
 /*
  * Copyright (c) 2005 Michael Shalayeff
@@ -21,7 +21,7 @@
 #define _MACHINE_PMAP_H_
 
 #include <machine/pte.h>
-#include <uvm/uvm_pglist.h>
+#include <uvm/uvm_page.h>
 #include <uvm/uvm_object.h>
 
 struct pmap {
@@ -67,6 +67,11 @@ pmap_prefer(vaddr_t offs, vaddr_t hint)
 		pmap_prefer_hint += HPPA_PGALIAS;
 	return pmap_prefer_hint;
 }
+
+/* pmap prefer alignment */
+#define PMAP_PREFER_ALIGN()	(HPPA_PGALIAS)
+/* pmap prefer offset within alignment */
+#define PMAP_PREFER_OFFSET(of)	((of) & HPPA_PGAOFF)
 
 #define	PMAP_GROWKERNEL
 #define	PMAP_STEAL_MEMORY

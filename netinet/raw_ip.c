@@ -1,4 +1,4 @@
-/*	$OpenBSD: raw_ip.c,v 1.50 2010/09/08 08:34:42 claudio Exp $	*/
+/*	$OpenBSD: raw_ip.c,v 1.57 2011/04/28 09:56:27 claudio Exp $	*/
 /*	$NetBSD: raw_ip.c,v 1.25 1996/02/18 18:58:33 christos Exp $	*/
 
 /*
@@ -128,6 +128,8 @@ rip_input(struct mbuf *m, ...)
 
 	ripsrc.sin_addr = ip->ip_src;
 	CIRCLEQ_FOREACH(inp, &rawcbtable.inpt_queue, inp_queue) {
+		if (inp->inp_socket->so_state & SS_CANTRCVMORE)
+			continue;
 #ifdef INET6
 		if (inp->inp_flags & INP_IPV6)
 			continue;
@@ -155,6 +157,16 @@ rip_input(struct mbuf *m, ...)
 		if (inp->inp_faddr.s_addr &&
 		    inp->inp_faddr.s_addr != ip->ip_src.s_addr)
 			continue;
+#if NPF > 0
+		if (m->m_pkthdr.pf.statekey && !inp->inp_pf_sk &&
+		    !((struct pf_state_key *)m->m_pkthdr.pf.statekey)->inp &&
+		    (inp->inp_socket->so_state & SS_ISCONNECTED) &&
+		    ip->ip_p != IPPROTO_ICMP) {
+			((struct pf_state_key *)m->m_pkthdr.pf.statekey)->inp =
+			    inp;
+			inp->inp_pf_sk = m->m_pkthdr.pf.statekey;
+		}
+#endif
 		if (last) {
 			struct mbuf *n;
 
@@ -275,6 +287,11 @@ rip_output(struct mbuf *m, ...)
 	/* force routing domain */
 	m->m_pkthdr.rdomain = inp->inp_rtableid;
 
+#if NPF > 0
+	if (inp->inp_socket->so_state & SS_ISCONNECTED &&
+	    ip->ip_p != IPPROTO_ICMP)
+		m->m_pkthdr.pf.inp = inp;
+#endif
 	error = ip_output(m, inp->inp_options, &inp->inp_route, flags,
 	    inp->inp_moptions, inp);
 	if (error == EACCES)	/* translate pf(4) error for userland */
@@ -417,13 +434,15 @@ rip_usrreq(struct socket *so, int req, struct mbuf *m, struct mbuf *nam,
 			error = EINVAL;
 			break;
 		}
-		if ((TAILQ_EMPTY(&ifnet)) ||
-		    ((addr->sin_family != AF_INET) &&
-		     (addr->sin_family != AF_IMPLINK)) ||
-		    (addr->sin_addr.s_addr &&
-		     (!(so->so_options & SO_BINDANY) &&
-		     in_iawithaddr(addr->sin_addr, NULL, inp->inp_rtableid) ==
-		     0))) {
+		if (TAILQ_EMPTY(&ifnet) ||
+		    addr->sin_family != AF_INET ||
+		    addr->sin_addr.s_addr == 0) {
+			error = EADDRNOTAVAIL;
+			break;
+		}
+		if (!((so->so_options & SO_BINDANY) ||
+		     in_iawithaddr(addr->sin_addr, inp->inp_rtableid) ||
+		     in_broadcast(addr->sin_addr, NULL, inp->inp_rtableid))) {
 			error = EADDRNOTAVAIL;
 			break;
 		}
@@ -442,8 +461,7 @@ rip_usrreq(struct socket *so, int req, struct mbuf *m, struct mbuf *nam,
 			error = EADDRNOTAVAIL;
 			break;
 		}
-		if ((addr->sin_family != AF_INET) &&
-		     (addr->sin_family != AF_IMPLINK)) {
+		if (addr->sin_family != AF_INET) {
 			error = EAFNOSUPPORT;
 			break;
 		}

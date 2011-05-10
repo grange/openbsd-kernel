@@ -1,4 +1,4 @@
-/*	$OpenBSD: segments.h,v 1.18 2010/12/24 20:26:30 tedu Exp $	*/
+/*	$OpenBSD: segments.h,v 1.20 2011/03/23 16:54:35 pirofti Exp $	*/
 /*	$NetBSD: segments.h,v 1.23 1996/02/01 22:31:03 mycroft Exp $	*/
 
 /*-
@@ -42,8 +42,8 @@
  *	William F. Jolitz (william@ernie.berkeley.edu) 6/20/1989
  */
 
-#ifndef _I386_SEGMENTS_H_
-#define _I386_SEGMENTS_H_
+#ifndef _MACHINE_SEGMENTS_H_
+#define _MACHINE_SEGMENTS_H_
 
 /*
  * Selectors
@@ -215,19 +215,20 @@ void idt_vec_free(int);
 #define	GCODE_SEL	1	/* Kernel code descriptor */
 #define	GDATA_SEL	2	/* Kernel data descriptor */
 #define	GLDT_SEL	3	/* Default LDT descriptor */
-#define	GUCODE1_SEL	4	/* User code descriptor */
+#define	GCPU_SEL	4	/* per-CPU segment */
 #define	GUCODE_SEL	5	/* User code descriptor (a stack short) */
 #define	GUDATA_SEL	6	/* User data descriptor */
 #define	GAPM32CODE_SEL	7	/* 32 bit APM code descriptor */
 #define	GAPM16CODE_SEL	8	/* 16 bit APM code descriptor */
 #define	GAPMDATA_SEL	9	/* APM data descriptor */
 #define	GICODE_SEL	10	/* Interrupt code descriptor (same as Kernel code) */
-#define GCPU_SEL	11	/* per-CPU segment */
-#define	NGDT		12
+#define	GUFS_SEL	11	/* User per-thread (%fs) descriptor */
+#define	GUGS_SEL	12	/* User per-thread (%gs) descriptor */
+#define	NGDT		13
 
 /*
  * Entries in the Local Descriptor Table (LDT)
  */
 #define	NLDT		17
 
-#endif /* _I386_SEGMENTS_H_ */
+#endif /* _MACHINE_SEGMENTS_H_ */

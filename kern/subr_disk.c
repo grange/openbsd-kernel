@@ -1,4 +1,4 @@
-/*	$OpenBSD: subr_disk.c,v 1.114 2010/11/24 15:31:34 jsing Exp $	*/
+/*	$OpenBSD: subr_disk.c,v 1.121 2011/04/28 17:50:17 marco Exp $	*/
 /*	$NetBSD: subr_disk.c,v 1.17 1996/03/16 23:17:08 christos Exp $	*/
 
 /*
@@ -77,6 +77,8 @@ int	disk_change;		/* set if a disk has been attached/detached
 				 * since last we looked at this variable. This
 				 * is reset by hw_sysctl()
 				 */
+
+u_char	rootduid[8];		/* DUID of root disk. */
 
 /* softraid callback, do not use! */
 void (*softraid_disk_attach)(struct disk *, int);
@@ -400,7 +402,7 @@ readdoslabel(struct buf *bp, void (*strat)(struct buf *),
 	 * Read dos partition table, follow extended partitions.
 	 * Map the partitions to disklabel entries i-p
 	 */
-	while (wander && n < 8 && loop < 8) {
+	while (wander && loop < DOS_MAXEBR) {
 		loop++;
 		wander = 0;
 		if (part_blkno < extoff)
@@ -410,7 +412,8 @@ readdoslabel(struct buf *bp, void (*strat)(struct buf *),
 		bp->b_blkno = DL_BLKTOSEC(lp, part_blkno) * DL_BLKSPERSEC(lp);
 		offset = DL_BLKOFFSET(lp, part_blkno) + DOSPARTOFF;
 		bp->b_bcount = lp->d_secsize;
-		bp->b_flags = B_BUSY | B_READ | B_RAW;
+		CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+		SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 		(*strat)(bp);
 		error = biowait(bp);
 		if (error) {
@@ -466,8 +469,8 @@ donot:
 		 * In case the disklabel read below fails, we want to
 		 * provide a fake label in i-p.
 		 */
-		for (dp2=dp, i=0; i < NDOSPART && n < 8; i++, dp2++) {
-			struct partition *pp = &lp->d_partitions[8+n];
+		for (dp2=dp, i=0; i < NDOSPART; i++, dp2++) {
+			struct partition *pp;
 			u_int8_t fstype;
 
 			if (dp2->dp_typ == DOSPTYP_OPENBSD)
@@ -482,17 +485,14 @@ donot:
 			switch (dp2->dp_typ) {
 			case DOSPTYP_UNUSED:
 				fstype = FS_UNUSED;
-				n++;
 				break;
 
 			case DOSPTYP_LINUX:
 				fstype = FS_EXT2FS;
-				n++;
 				break;
 
 			case DOSPTYP_NTFS:
 				fstype = FS_NTFS;
-				n++;
 				break;
 
 			case DOSPTYP_FAT12:
@@ -502,7 +502,6 @@ donot:
 			case DOSPTYP_FAT32:
 			case DOSPTYP_FAT32L:
 				fstype = FS_MSDOS;
-				n++;
 				break;
 			case DOSPTYP_EXTEND:
 			case DOSPTYP_EXTENDL:
@@ -516,7 +515,6 @@ donot:
 				break;
 			default:
 				fstype = FS_OTHER;
-				n++;
 				break;
 			}
 
@@ -524,10 +522,15 @@ donot:
 			 * Don't set fstype/offset/size when just looking for
 			 * the offset of the OpenBSD partition. It would
 			 * invalidate the disklabel checksum!
+			 *
+			 * Don't try to spoof more than 8 partitions, i.e.
+			 * 'i' -'p'.
 			 */
-			if (partoffp)
+			if (partoffp || n >= 8)
 				continue;
 
+			pp = &lp->d_partitions[8+n];
+			n++;
 			pp->p_fstype = fstype;
 			if (letoh32(dp2->dp_start))
 				DL_SETPOFFSET(pp,
@@ -595,7 +598,8 @@ notfat:
 	    DL_BLKSPERSEC(lp);
 	offset = DL_BLKOFFSET(lp, dospartoff + DOS_LABELSECTOR);
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp))
 		return (bp->b_error);
@@ -786,7 +790,7 @@ disk_construct(struct disk *diskp, char *lockname)
 	mtx_init(&diskp->dk_mtx, IPL_BIO);
 
 	diskp->dk_flags |= DKF_CONSTRUCTED;
-	    
+
 	return (0);
 }
 
@@ -999,7 +1003,7 @@ dk_mountroot(void)
 #endif
 	default:
 #ifdef FFS
-		{ 
+		{
 		extern int ffs_mountroot(void);
 
 		printf("filesystem type %d not known.. assuming ffs\n",
@@ -1007,7 +1011,7 @@ dk_mountroot(void)
 		mountrootfn = ffs_mountroot;
 		}
 #else
-		panic("disk 0x%x filesystem type %d not known", 
+		panic("disk 0x%x filesystem type %d not known",
 		    rootdev, dl.d_partitions[part].p_fstype);
 #endif
 	}
@@ -1080,6 +1084,8 @@ setroot(struct device *bootdv, int part, int exitflags)
 	struct device *rootdv, *dv;
 	dev_t nrootdev, nswapdev = NODEV, temp = NODEV;
 	struct ifnet *ifp = NULL;
+	struct disk *dk = NULL;
+	u_char duid[8];
 	char buf[128];
 #if defined(NFSCLIENT)
 	extern char *nfsbootdevname;
@@ -1185,6 +1191,22 @@ gotswap:
 		 * `swap generic'
 		 */
 		rootdv = bootdv;
+		bzero(&duid, sizeof(duid));
+		if (bcmp(rootduid, &duid, sizeof(rootduid)) != 0) {
+			TAILQ_FOREACH(dk, &disklist, dk_link)
+				if (dk->dk_label && bcmp(dk->dk_label->d_uid,
+				    &rootduid, sizeof(rootduid)) == 0)
+					break;
+			if (dk == NULL)
+				panic("root device (%02hhx%02hhx%02hhx%02hhx"
+				    "%02hhx%02hhx%02hhx%02hhx) not found",
+				    rootduid[0], rootduid[1], rootduid[2],
+				    rootduid[3], rootduid[4], rootduid[5],
+				    rootduid[6], rootduid[7]);
+			bcopy(rootduid, duid, sizeof(duid));
+			rootdv = dk->dk_device;
+		}
+
 		majdev = findblkmajor(rootdv);
 		if (majdev >= 0) {
 			/*
@@ -1241,6 +1263,12 @@ gotswap:
 	}
 
 	printf("root on %s%c", rootdv->dv_xname, 'a' + part);
+
+	if (dk != NULL && bcmp(rootduid, &duid, sizeof(rootduid)) == 0)
+		printf(" (%02hhx%02hhx%02hhx%02hhx%02hhx%02hhx%02hhx%02hhx.%c)",
+		    rootduid[0], rootduid[1], rootduid[2], rootduid[3],
+		    rootduid[4], rootduid[5], rootduid[6], rootduid[7],
+		    'a' + part);
 
 	/*
 	 * Make the swap partition on the root drive the primary swap.

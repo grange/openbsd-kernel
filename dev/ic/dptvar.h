@@ -1,4 +1,4 @@
-/*	$OpenBSD: dptvar.h,v 1.6 2010/07/20 20:46:18 mk Exp $	*/
+/*	$OpenBSD: dptvar.h,v 1.9 2011/04/26 22:55:58 matthew Exp $	*/
 /*	$NetBSD: dptvar.h,v 1.5 1999/10/23 16:26:32 ad Exp $	*/
 
 /*
@@ -50,27 +50,14 @@ struct dpt_ccb {
 	int		ccb_scsi_status;	/* from status packet */
 	int		ccb_id;			/* unique ID of this CCB */
 	SLIST_ENTRY(dpt_ccb) ccb_chain;		/* link to next CCB */
-#ifdef __NetBSD__
-	struct scsipi_sense_data ccb_sense;	/* SCSI sense data on error */
-	struct scsipi_xfer *ccb_xs;		/* initiating SCSI command */
-#endif /* __NetBSD__ */
-#ifdef __OpenBSD__
 	struct scsi_sense_data ccb_sense;
 	struct scsi_xfer *ccb_xs;
-#endif /* __OpenBSD__ */
 };
 
 struct dpt_softc {
 	struct device sc_dv;		/* generic device data */
 	bus_space_handle_t sc_ioh;	/* bus space handle */
-#ifdef __NetBSD__
-	struct scsipi_adapter sc_adapter;/* scsipi adapter */
-	struct scsipi_link sc_link[3];	/* prototype link for each channel */
-#endif /* __NetBSD__ */
-#ifdef __OpenBSD__
-	struct scsi_adapter sc_adapter;/* scsipi adapter */
 	struct scsi_link sc_link[3];	/* prototype link for each channel */
-#endif /* __OpenBSD__ */
 	struct eata_cfg sc_ec;		/* EATA configuration data */
 	bus_space_tag_t	sc_iot;		/* bus space tag */
 	bus_dma_tag_t	sc_dmat;	/* bus DMA tag */
@@ -89,6 +76,8 @@ struct dpt_softc {
 	int		sc_nccbs;	/* number of CCBs available */
 	int		sc_open;	/* device is open */
 	SLIST_HEAD(, dpt_ccb) sc_free_ccb;/* free ccb list */
+	struct mutex	sc_ccb_mtx;	/* free ccb list mutex */
+	struct scsi_iopool sc_iopool;
 };
 
 int	dpt_intr(void *);
@@ -97,22 +86,15 @@ void	dpt_init(struct dpt_softc *, const char *);
 void	dpt_shutdown(void *);
 void	dpt_timeout(void *);
 void	dpt_minphys(struct buf *, struct scsi_link *);
-#ifdef __NetBSD__
-int	dpt_scsi_cmd(struct scsipi_xfer *);
-#endif /* __NetBSD__ */
-#ifdef __OpenBSD__
 void	dpt_scsi_cmd(struct scsi_xfer *);
-#endif /* __OpenBSD__ */
 int	dpt_wait(struct dpt_softc *, u_int8_t, u_int8_t, int);
 int	dpt_poll(struct dpt_softc *, struct dpt_ccb *);
 int	dpt_cmd(struct dpt_softc *, struct eata_cp *, u_int32_t, int, int);
 void	dpt_hba_inquire(struct dpt_softc *, struct eata_inquiry_data **);
 void	dpt_reset_ccb(struct dpt_softc *, struct dpt_ccb *);
-void	dpt_free_ccb(struct dpt_softc *, struct dpt_ccb *);
 void	dpt_done_ccb(struct dpt_softc *, struct dpt_ccb *);
 int	dpt_init_ccb(struct dpt_softc *, struct dpt_ccb *);
 int	dpt_create_ccbs(struct dpt_softc *, struct dpt_ccb *, int);
-struct dpt_ccb	*dpt_alloc_ccb(struct dpt_softc *, int);
 #ifdef DEBUG
 void	dpt_dump_sp(struct eata_sp *);
 #endif

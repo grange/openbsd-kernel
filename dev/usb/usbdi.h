@@ -1,4 +1,4 @@
-/*	$OpenBSD: usbdi.h,v 1.38 2011/01/16 22:35:29 jakemsr Exp $ */
+/*	$OpenBSD: usbdi.h,v 1.42 2011/02/09 20:24:39 jakemsr Exp $ */
 /*	$NetBSD: usbdi.h,v 1.62 2002/07/11 21:14:35 augustss Exp $	*/
 /*	$FreeBSD: src/sys/dev/usb/usbdi.h,v 1.18 1999/11/17 22:33:49 n_hibma Exp $	*/
 
@@ -139,6 +139,7 @@ usbd_status usbd_set_interface(usbd_interface_handle, int);
 int usbd_get_no_alts(usb_config_descriptor_t *, int);
 usbd_status  usbd_get_interface(usbd_interface_handle iface, u_int8_t *aiface);
 void usbd_fill_deviceinfo(usbd_device_handle, struct usb_device_info *, int);
+void usbd_fill_di_task(void *);
 int usbd_get_interface_altindex(usbd_interface_handle iface);
 
 usb_interface_descriptor_t *usbd_find_idesc(usb_config_descriptor_t *cd,
@@ -150,9 +151,6 @@ void usbd_dopoll(usbd_interface_handle);
 void usbd_set_polling(usbd_device_handle iface, int on);
 
 const char *usbd_errstr(usbd_status err);
-
-void usbd_add_dev_event(int, usbd_device_handle);
-void usbd_add_drv_event(int, usbd_device_handle, struct device *);
 
 char *usbd_devinfo_alloc(usbd_device_handle dev, int showclass);
 void usbd_devinfo_free(char *devinfop);
@@ -185,8 +183,8 @@ void usb_desc_iter_init(usbd_device_handle, usbd_desc_iter_t *);
 const usb_descriptor_t *usb_desc_iter_next(usbd_desc_iter_t *);
 
 /*
- * The usb_task structs form a queue of things to run in the USB event
- * thread.  Normally this is just device discovery when a connect/disconnect
+ * The usb_task structs form a queue of things to run in the USB task
+ * threads.  Normally this is just device discovery when a connect/disconnect
  * has been detected.  But it may also be used by drivers that need to
  * perform (short) tasks that must have a process context.
  */
@@ -196,22 +194,25 @@ struct usb_task {
 	void (*fun)(void *);
 	void *arg;
 	char type;
-#define USB_TASK_TYPE_GENERIC	0
+#define	USB_TASK_TYPE_GENERIC	0
 #define USB_TASK_TYPE_EXPLORE	1
 #define USB_TASK_TYPE_ABORT	2
-	char onqueue;
-	char running;
+	u_int state;
+#define	USB_TASK_STATE_NONE	0x0
+#define	USB_TASK_STATE_ONQ	0x1
+#define	USB_TASK_STATE_RUN	0x2
+
 };
 
 void usb_add_task(usbd_device_handle, struct usb_task *);
 void usb_rem_task(usbd_device_handle, struct usb_task *);
+void usb_wait_task(usbd_device_handle, struct usb_task *);
 void usb_rem_wait_task(usbd_device_handle, struct usb_task *);
 #define usb_init_task(t, f, a, y) \
 	((t)->fun = (f),	\
 	(t)->arg = (a),		\
 	(t)->type = (y),	\
-	(t)->onqueue = 0,	\
-	(t)->running = 0)
+	(t)->state = USB_TASK_STATE_NONE)
 
 struct usb_devno {
 	u_int16_t ud_vendor;

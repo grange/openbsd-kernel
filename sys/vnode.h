@@ -1,4 +1,4 @@
-/*	$OpenBSD: vnode.h,v 1.107 2010/12/21 20:14:43 thib Exp $	*/
+/*	$OpenBSD: vnode.h,v 1.109 2011/04/05 14:34:16 thib Exp $	*/
 /*	$NetBSD: vnode.h,v 1.38 1996/02/29 20:59:05 cgd Exp $	*/
 
 /*
@@ -260,7 +260,6 @@ extern void    vdrop(struct vnode *);
 
 /* vnode operations */
 struct vops {
-	int	(*vop_default)(void *);
 	int	(*vop_lock)(void *);
 	int	(*vop_unlock)(void *);
 	int	(*vop_islocked)(void *);
@@ -309,13 +308,11 @@ struct vop_generic_args {
 };
 
 struct vop_islocked_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 };
 int VOP_ISLOCKED(struct vnode *);
 
 struct vop_lookup_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode **a_vpp;
 	struct componentname *a_cnp;
@@ -323,7 +320,6 @@ struct vop_lookup_args {
 int VOP_LOOKUP(struct vnode *, struct vnode **, struct componentname *);
 
 struct vop_create_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode **a_vpp;
 	struct componentname *a_cnp;
@@ -333,7 +329,6 @@ int VOP_CREATE(struct vnode *, struct vnode **, struct componentname *,
     struct vattr *);
 
 struct vop_mknod_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode **a_vpp;
 	struct componentname *a_cnp;
@@ -343,7 +338,6 @@ int VOP_MKNOD(struct vnode *, struct vnode **, struct componentname *,
     struct vattr *);
 
 struct vop_open_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_mode;
 	struct ucred *a_cred;
@@ -352,7 +346,6 @@ struct vop_open_args {
 int VOP_OPEN(struct vnode *, int, struct ucred *, struct proc *);
 
 struct vop_close_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_fflag;
 	struct ucred *a_cred;
@@ -361,7 +354,6 @@ struct vop_close_args {
 int VOP_CLOSE(struct vnode *, int, struct ucred *, struct proc *);
 
 struct vop_access_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_mode;
 	struct ucred *a_cred;
@@ -370,7 +362,6 @@ struct vop_access_args {
 int VOP_ACCESS(struct vnode *, int, struct ucred *, struct proc *);
 
 struct vop_getattr_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct vattr *a_vap;
 	struct ucred *a_cred;
@@ -379,7 +370,6 @@ struct vop_getattr_args {
 int VOP_GETATTR(struct vnode *, struct vattr *, struct ucred *, struct proc *);
 
 struct vop_setattr_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct vattr *a_vap;
 	struct ucred *a_cred;
@@ -388,7 +378,6 @@ struct vop_setattr_args {
 int VOP_SETATTR(struct vnode *, struct vattr *, struct ucred *, struct proc *);
 
 struct vop_read_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct uio *a_uio;
 	int a_ioflag;
@@ -397,7 +386,6 @@ struct vop_read_args {
 int VOP_READ(struct vnode *, struct uio *, int, struct ucred *);
 
 struct vop_write_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct uio *a_uio;
 	int a_ioflag;
@@ -406,7 +394,6 @@ struct vop_write_args {
 int VOP_WRITE(struct vnode *, struct uio *, int, struct ucred *);
 
 struct vop_ioctl_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	u_long a_command;
 	void *a_data;
@@ -418,7 +405,6 @@ int VOP_IOCTL(struct vnode *, u_long, void *, int, struct ucred *,
     struct proc *);
 
 struct vop_poll_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_events;
 	struct proc *a_p;
@@ -426,21 +412,18 @@ struct vop_poll_args {
 int VOP_POLL(struct vnode *, int, struct proc *);
 
 struct vop_kqfilter_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct knote *a_kn;
 };
 int VOP_KQFILTER(struct vnode *, struct knote *);
 
 struct vop_revoke_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_flags;
 };
 int VOP_REVOKE(struct vnode *, int);
 
 struct vop_fsync_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct ucred *a_cred;
 	int a_waitfor;
@@ -449,7 +432,6 @@ struct vop_fsync_args {
 int VOP_FSYNC(struct vnode *, struct ucred *, int, struct proc *);
 
 struct vop_remove_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode *a_vp;
 	struct componentname *a_cnp;
@@ -457,7 +439,6 @@ struct vop_remove_args {
 int VOP_REMOVE(struct vnode *, struct vnode *, struct componentname *);
 
 struct vop_link_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode *a_vp;
 	struct componentname *a_cnp;
@@ -465,7 +446,6 @@ struct vop_link_args {
 int VOP_LINK(struct vnode *, struct vnode *, struct componentname *);
 
 struct vop_rename_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_fdvp;
 	struct vnode *a_fvp;
 	struct componentname *a_fcnp;
@@ -477,7 +457,6 @@ int VOP_RENAME(struct vnode *, struct vnode *, struct componentname *,
     struct vnode *, struct vnode *, struct componentname *);
 
 struct vop_mkdir_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode **a_vpp;
 	struct componentname *a_cnp;
@@ -487,7 +466,6 @@ int VOP_MKDIR(struct vnode *, struct vnode **, struct componentname *,
     struct vattr *);
 
 struct vop_rmdir_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode *a_vp;
 	struct componentname *a_cnp;
@@ -495,7 +473,6 @@ struct vop_rmdir_args {
 int VOP_RMDIR(struct vnode *, struct vnode *, struct componentname *);
 
 struct vop_symlink_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct vnode **a_vpp;
 	struct componentname *a_cnp;
@@ -506,7 +483,6 @@ int VOP_SYMLINK(struct vnode *, struct vnode **, struct componentname *,
     struct vattr *, char *);
 
 struct vop_readdir_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct uio *a_uio;
 	struct ucred *a_cred;
@@ -518,7 +494,6 @@ int VOP_READDIR(struct vnode *, struct uio *, struct ucred *, int *, int *,
     u_long **);
 
 struct vop_readlink_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct uio *a_uio;
 	struct ucred *a_cred;
@@ -526,28 +501,24 @@ struct vop_readlink_args {
 int VOP_READLINK(struct vnode *, struct uio *, struct ucred *);
 
 struct vop_abortop_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_dvp;
 	struct componentname *a_cnp;
 };
 int VOP_ABORTOP(struct vnode *, struct componentname *);
 
 struct vop_inactive_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct proc *a_p;
 };
 int VOP_INACTIVE(struct vnode *, struct proc *);
 
 struct vop_reclaim_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct proc *a_p;
 };
 int VOP_RECLAIM(struct vnode *, struct proc *);
 
 struct vop_lock_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_flags;
 	struct proc *a_p;
@@ -555,7 +526,6 @@ struct vop_lock_args {
 int VOP_LOCK(struct vnode *, int, struct proc *);
 
 struct vop_unlock_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_flags;
 	struct proc *a_p;
@@ -563,7 +533,6 @@ struct vop_unlock_args {
 int VOP_UNLOCK(struct vnode *, int, struct proc *);
 
 struct vop_bmap_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	daddr64_t a_bn;
 	struct vnode **a_vpp;
@@ -573,13 +542,11 @@ struct vop_bmap_args {
 int VOP_BMAP(struct vnode *, daddr64_t, struct vnode **, daddr64_t *, int *);
 
 struct vop_print_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 };
 int VOP_PRINT(struct vnode *);
 
 struct vop_pathconf_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	int a_name;
 	register_t *a_retval;
@@ -587,7 +554,6 @@ struct vop_pathconf_args {
 int VOP_PATHCONF(struct vnode *, int, register_t *);
 
 struct vop_advlock_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	void *a_id;
 	int a_op;
@@ -597,7 +563,6 @@ struct vop_advlock_args {
 int VOP_ADVLOCK(struct vnode *, void *, int, struct flock *, int);
 
 struct vop_reallocblks_args {
-	struct vnodeop_desc *a_desc;
 	struct vnode *a_vp;
 	struct cluster_save *a_buflist;
 };
@@ -605,13 +570,11 @@ int VOP_REALLOCBLKS(struct vnode *, struct cluster_save *);
 
 /* Special cases: */
 struct vop_strategy_args {
-	struct vnodeop_desc *a_desc;
 	struct buf *a_bp;
 };
 int VOP_STRATEGY(struct buf *);
 
 struct vop_bwrite_args {
-	struct vnodeop_desc *a_desc;
 	struct buf *a_bp;
 };
 int VOP_BWRITE(struct buf *);

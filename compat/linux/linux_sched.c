@@ -1,4 +1,4 @@
-/*	$OpenBSD: linux_sched.c,v 1.8 2010/01/04 19:27:21 guenther Exp $	*/
+/*	$OpenBSD: linux_sched.c,v 1.10 2011/04/05 15:44:40 pirofti Exp $	*/
 /*	$NetBSD: linux_sched.c,v 1.6 2000/05/28 05:49:05 thorpej Exp $	*/
 
 /*-
@@ -41,39 +41,41 @@
 #include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/syscallargs.h>
+#include <sys/signalvar.h>
 
 #include <machine/cpu.h>
+#include <machine/pcb.h>
+#include <machine/linux_machdep.h>
 
+#include <compat/linux/linux_emuldata.h>
 #include <compat/linux/linux_types.h>
 #include <compat/linux/linux_sched.h>
 #include <compat/linux/linux_signal.h>
 #include <compat/linux/linux_syscallargs.h>
 
+void linux_child_return(void *);
+
 int
-linux_sys_clone(p, v, retval)
-	struct proc *p;
-	void *v;
-	register_t *retval;
+linux_sys_clone(struct proc *p, void *v, register_t *retval)
 {
-	struct linux_sys_clone_args /* {
-		syscallarg(int) flags;
-		syscallarg(void *) stack;
-	} */ *uap = v;
+	struct linux_sys_clone_args *uap = v;
+	struct linux_emuldata *emul = p->p_emuldata;
 	int cflags = SCARG(uap, flags);
 	int flags = FORK_RFORK, sig;
+	int error = 0;
 
 	/*
 	 * We only support certain bits.  The Linux crew keep adding more,
 	 * so let's test for anything outside of what we support and complain
 	 * about them.  Not everything in this list is completely supported,
 	 * they just aren't _always_ an error.
-	 * To make nptl threads work we need to add support for at least
-	 * CLONE_SETTLS, CLONE_PARENT_SETTID, and CLONE_CHILD_CLEARTID.
 	 */
 	if (cflags & ~(LINUX_CLONE_CSIGNAL | LINUX_CLONE_VM | LINUX_CLONE_FS |
 	    LINUX_CLONE_FILES | LINUX_CLONE_SIGHAND | LINUX_CLONE_VFORK |
 	    LINUX_CLONE_PARENT | LINUX_CLONE_THREAD | LINUX_CLONE_SYSVSEM |
-	    LINUX_CLONE_DETACHED | LINUX_CLONE_UNTRACED))
+	    LINUX_CLONE_DETACHED | LINUX_CLONE_UNTRACED | LINUX_CLONE_SETTLS |
+	    LINUX_CLONE_PARENT_SETTID | LINUX_CLONE_CHILD_CLEARTID |
+	    LINUX_CLONE_CHILD_SETTID))
 		return (EINVAL);
 
 	if (cflags & LINUX_CLONE_VM)
@@ -140,21 +142,55 @@ linux_sys_clone(p, v, retval)
 		return (EINVAL);
 	sig = linux_to_bsd_sig[sig];
 
+	if (cflags & LINUX_CLONE_CHILD_SETTID)
+		emul->child_set_tid = SCARG(uap, child_tidptr);
+	else
+		emul->child_set_tid = NULL;
+
+	if (cflags & LINUX_CLONE_CHILD_CLEARTID)
+		emul->child_clear_tid = SCARG(uap, child_tidptr);
+	else
+		emul->child_clear_tid = NULL;
+
+	if (cflags & LINUX_CLONE_PARENT_SETTID)
+		if (SCARG(uap, parent_tidptr) == NULL)
+			return (EINVAL);
+
+	if (cflags & LINUX_CLONE_SETTLS) {
+		struct l_segment_descriptor ldesc;
+
+		error = copyin(SCARG(uap, tls), &ldesc, sizeof(ldesc));
+		if (error)
+			return (error);
+
+		if (ldesc.entry_number != GUGS_SEL)
+			return (EINVAL);
+		emul->child_tls_base = ldesc.base_addr;
+	}
+	else
+		emul->child_tls_base = 0;
+
 	/*
 	 * Note that Linux does not provide a portable way of specifying
 	 * the stack area; the caller must know if the stack grows up
 	 * or down.  So, we pass a stack size of 0, so that the code
 	 * that makes this adjustment is a noop.
 	 */
-	return (fork1(p, sig, flags, SCARG(uap, stack), 0, NULL, NULL, retval,
-	    NULL));
+	error = fork1(p, sig, flags, SCARG(uap, stack), 0, linux_child_return,
+	    p, retval, NULL);
+	if (error)
+		return error;
+
+	if (cflags & LINUX_CLONE_PARENT_SETTID) {
+		pid_t pid = retval[0];
+
+		error = copyout(&pid, SCARG(uap, parent_tidptr), sizeof(pid));
+	}
+	return (error);
 }
 
 int
-linux_sys_sched_setparam(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_setparam(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_setparam_args /* {
 		syscallarg(linux_pid_t) pid;
@@ -193,10 +229,7 @@ linux_sys_sched_setparam(cp, v, retval)
 }
 
 int
-linux_sys_sched_getparam(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_getparam(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_getparam_args /* {
 		syscallarg(linux_pid_t) pid;
@@ -231,10 +264,7 @@ linux_sys_sched_getparam(cp, v, retval)
 }
 
 int
-linux_sys_sched_setscheduler(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_setscheduler(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_setscheduler_args /* {
 		syscallarg(linux_pid_t) pid;
@@ -280,10 +310,7 @@ linux_sys_sched_setscheduler(cp, v, retval)
 }
 
 int
-linux_sys_sched_getscheduler(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_getscheduler(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_getscheduler_args /* {
 		syscallarg(linux_pid_t) pid;
@@ -318,20 +345,14 @@ linux_sys_sched_getscheduler(cp, v, retval)
 }
 
 int
-linux_sys_sched_yield(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_yield(struct proc *cp, void *v, register_t *retval)
 {
 	need_resched(curcpu());
 	return (0);
 }
 
 int
-linux_sys_sched_get_priority_max(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_get_priority_max(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_get_priority_max_args /* {
 		syscallarg(int) policy;
@@ -350,10 +371,7 @@ linux_sys_sched_get_priority_max(cp, v, retval)
 }
 
 int
-linux_sys_sched_get_priority_min(cp, v, retval)
-	struct proc *cp;
-	void *v;
-	register_t *retval;
+linux_sys_sched_get_priority_min(struct proc *cp, void *v, register_t *retval)
 {
 	struct linux_sys_sched_get_priority_min_args /* {
 		syscallarg(int) policy;
@@ -369,4 +387,35 @@ linux_sys_sched_get_priority_min(cp, v, retval)
 
 	*retval = 0;
 	return (0);
+}
+
+int
+linux_sys_set_tid_address(struct proc *p, void *v, register_t *retval)
+{
+	struct linux_sys_set_tid_address_args *uap = v;
+	struct linux_emuldata *emul = p->p_emuldata;
+
+	emul->my_clear_tid = SCARG(uap, tidptr);
+
+	*retval = p->p_p->ps_pid;
+	return 0;
+}
+
+void
+linux_child_return(void *arg)
+{
+	struct proc *p = (struct proc *)arg;
+	struct linux_emuldata *emul = p->p_emuldata;
+
+	if (i386_set_threadbase(p, &emul->my_tls_base, TSEG_GS))
+		return;
+
+	if (emul->my_set_tid) {
+		pid_t pid = p->p_pid + THREAD_PID_OFFSET;
+
+		if (copyout(&pid, emul->my_set_tid, sizeof(pid)))
+			psignal(p, SIGSEGV);
+	}
+
+	child_return(p);
 }

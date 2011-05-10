@@ -1,4 +1,4 @@
-/*	$OpenBSD: gdt_common.c,v 1.55 2010/10/12 00:53:32 krw Exp $	*/
+/*	$OpenBSD: gdt_common.c,v 1.57 2011/04/19 23:59:11 krw Exp $	*/
 
 /*
  * Copyright (c) 1999, 2000, 2003 Niklas Hallqvist.  All rights reserved.
@@ -69,8 +69,8 @@ void	gdt_enqueue(struct gdt_softc *, struct scsi_xfer *, int);
 void	gdt_enqueue_ccb(struct gdt_softc *, struct gdt_ccb *);
 void	gdt_eval_mapping(u_int32_t, int *, int *, int *);
 int	gdt_exec_ccb(struct gdt_ccb *);
-void	gdt_free_ccb(struct gdt_softc *, struct gdt_ccb *);
-struct gdt_ccb *gdt_get_ccb(struct gdt_softc *, int);
+void	gdt_ccb_free(void *, void *);
+void   *gdt_ccb_alloc(void *);
 void	gdt_internal_cache_cmd(struct scsi_xfer *);
 int	gdt_internal_cmd(struct gdt_softc *, u_int8_t, u_int16_t,
     u_int32_t, u_int32_t, u_int32_t);
@@ -82,7 +82,6 @@ int	gdt_ioctl_disk(struct gdt_softc *, struct bioc_disk *);
 int	gdt_ioctl_alarm(struct gdt_softc *, struct bioc_alarm *);
 int	gdt_ioctl_setstate(struct gdt_softc *, struct bioc_setstate *);
 #endif /* NBIO > 0 */
-void	gdt_raw_scsi_cmd(struct scsi_xfer *);
 void	gdt_scsi_cmd(struct scsi_xfer *);
 void	gdt_start_ccbs(struct gdt_softc *);
 int	gdt_sync_event(struct gdt_softc *, int, u_int8_t,
@@ -97,10 +96,6 @@ struct cfdriver gdt_cd = {
 
 struct scsi_adapter gdt_switch = {
 	gdt_scsi_cmd, gdtminphys, 0, 0,
-};
-
-struct scsi_adapter gdt_raw_switch = {
-	gdt_raw_scsi_cmd, gdtminphys, 0, 0,
 };
 
 int gdt_cnt = 0;
@@ -136,6 +131,9 @@ gdt_attach(struct gdt_softc *sc)
 	TAILQ_INIT(&sc->sc_ucmdq);
 	LIST_INIT(&sc->sc_queue);
 
+	mtx_init(&sc->sc_ccb_mtx, IPL_BIO);
+	scsi_iopool_init(&sc->sc_iopool, sc, gdt_ccb_alloc, gdt_ccb_free);
+
 	/* Initialize the ccbs */
 	for (i = 0; i < GDT_MAXCMDS; i++) {
 		sc->sc_ccbs[i].gc_cmd_index = i + 2;
@@ -161,6 +159,7 @@ gdt_attach(struct gdt_softc *sc)
 	sc->sc_link.adapter_buswidth =
 	    (sc->sc_class & GDT_FC) ? GDT_MAXID : GDT_MAX_HDRIVES;
 	sc->sc_link.adapter_target = sc->sc_link.adapter_buswidth;
+	sc->sc_link.pool = &sc->sc_iopool;
 
 	if (!gdt_internal_cmd(sc, GDT_SCREENSERVICE, GDT_INIT, 0, 0, 0)) {
 		printf("screen service initialization error %d\n",
@@ -484,26 +483,6 @@ gdt_attach(struct gdt_softc *sc)
 
 	config_found(&sc->sc_dev, &saa, scsiprint);
 
-	sc->sc_raw_link = malloc(sc->sc_bus_cnt * sizeof (struct scsi_link),
-	    M_DEVBUF, M_NOWAIT | M_ZERO);
-	if (sc->sc_raw_link == NULL)
-		panic("gdt_attach");
-
-	for (i = 0; i < sc->sc_bus_cnt; i++) {
-		/* Fill in the prototype scsi_link. */
-		sc->sc_raw_link[i].adapter_softc = sc;
-		sc->sc_raw_link[i].adapter = &gdt_raw_switch;
-		sc->sc_raw_link[i].adapter_target = 7;
-		sc->sc_raw_link[i].openings = 4;	/* XXX a guess */
-		sc->sc_raw_link[i].adapter_buswidth =
-		    (sc->sc_class & GDT_FC) ? GDT_MAXID : 16;	/* XXX */
-
-		bzero(&saa, sizeof(saa));
-		saa.saa_sc_link = &sc->sc_raw_link[i];
-
-		config_found(&sc->sc_dev, &saa, scsiprint);
-	}
-
 	gdt_polling = 0;
 	return (0);
 }
@@ -701,22 +680,13 @@ gdt_scsi_cmd(struct scsi_xfer *xs)
 				}
 			}
 
-			ccb = gdt_get_ccb(sc, xs->flags);
-			/*
-			 * We are out of commands, try again in a little while.
-			 */
-			if (ccb == NULL) {
-				xs->error = XS_NO_CCB;
-				scsi_done(xs);
-				splx(s);
-				return;
-			}
-
+			ccb = xs->io;
 			ccb->gc_blockno = blockno;
 			ccb->gc_blockcnt = blockcnt;
 			ccb->gc_xs = xs;
 			ccb->gc_timeout = xs->timeout;
 			ccb->gc_service = GDT_CACHESERVICE;
+			ccb->gc_flags = 0;
 			gdt_ccb_set_cmd(ccb, GDT_GCF_SCSI);
 
 			if (xs->cmd->opcode != SYNCHRONIZE_CACHE) {
@@ -737,7 +707,6 @@ gdt_scsi_cmd(struct scsi_xfer *xs)
 						    "loading dma map\n",
 						    error);
 
-					gdt_free_ccb(sc, ccb);
 					xs->error = XS_DRIVER_STUFFUP;
 					scsi_done(xs);
 					goto ready;
@@ -756,7 +725,7 @@ gdt_scsi_cmd(struct scsi_xfer *xs)
 					printf("%s: command %d timed out\n",
 					    DEVNAME(sc),
 					    ccb->gc_cmd_index);
-					xs->error = XS_NO_CCB;
+					xs->error = XS_TIMEOUT;
 					scsi_done(xs);
 					splx(s);
 					return;
@@ -884,7 +853,6 @@ gdt_exec_ccb(struct gdt_ccb *ccb)
 	    sc->sc_cmd_off + sc->sc_cmd_len + GDT_DPMEM_COMMAND_OFFSET >
 	    sc->sc_ic_all_size) {
 		printf("%s: DPMEM overflow\n", DEVNAME(sc));
-		gdt_free_ccb(sc, ccb);
 		xs->error = XS_BUSY;
 #if 1 /* XXX */
 		__level--;
@@ -987,43 +955,6 @@ gdt_internal_cache_cmd(struct scsi_xfer *xs)
 	}
 
 	xs->error = XS_NOERROR;
-}
-
-/* Start a raw SCSI operation */
-void
-gdt_raw_scsi_cmd(struct scsi_xfer *xs)
-{
-	struct scsi_link *link = xs->sc_link;
-	struct gdt_softc *sc = link->adapter_softc;
-	struct gdt_ccb *ccb;
-	int s;
-
-	GDT_DPRINTF(GDT_D_CMD, ("gdt_raw_scsi_cmd "));
-
-	if (xs->cmdlen > 12 /* XXX create #define */) {
-		GDT_DPRINTF(GDT_D_CMD, ("CDB too big %p ", xs));
-		bzero(&xs->sense, sizeof(xs->sense));
-		xs->sense.error_code = SSD_ERRCODE_VALID | SSD_ERRCODE_CURRENT;
-		xs->sense.flags = SKEY_ILLEGAL_REQUEST;
-		xs->sense.add_sense_code = 0x20; /* illcmd, 0x24 illfield */
-		xs->error = XS_SENSE;
-		scsi_done(xs);
-		return;
-	}
-
-	if ((ccb = gdt_get_ccb(sc, xs->flags)) == NULL) {
-		GDT_DPRINTF(GDT_D_CMD, ("no ccb available for %p ", xs));
-		xs->error = XS_DRIVER_STUFFUP;
-		scsi_done(xs);
-		return;
-	}
-
-	xs->error = XS_DRIVER_STUFFUP;
-	s = splbio();
-	scsi_done(xs);
-	gdt_free_ccb(sc, ccb);
-
-	splx(s);
 }
 
 void
@@ -1143,7 +1074,6 @@ gdt_intr(void *arg)
 		    BUS_DMASYNC_POSTWRITE);
 		bus_dmamap_unload(sc->sc_dmat, ccb->gc_dmamap_xfer);
 	}
-	gdt_free_ccb(sc, ccb);
 	switch (prev_cmd) {
 	case GDT_GCF_UNUSED:
 		/* XXX Not yet implemented */
@@ -1221,7 +1151,7 @@ int
 gdt_internal_cmd(struct gdt_softc *sc, u_int8_t service, u_int16_t opcode,
     u_int32_t arg1, u_int32_t arg2, u_int32_t arg3)
 {
-	int retries;
+	int retries, rslt;
 	struct gdt_ccb *ccb;
 
 	GDT_DPRINTF(GDT_D_CMD, ("gdt_internal_cmd(%p, %d, %d, %d, %d, %d) ",
@@ -1230,13 +1160,17 @@ gdt_internal_cmd(struct gdt_softc *sc, u_int8_t service, u_int16_t opcode,
 	bzero(sc->sc_cmd, GDT_CMD_SZ);
 
 	for (retries = GDT_RETRIES; ; ) {
-		ccb = gdt_get_ccb(sc, SCSI_NOSLEEP);
+		ccb = scsi_io_get(&sc->sc_iopool, SCSI_NOSLEEP);
 		if (ccb == NULL) {
 			printf("%s: no free command index found\n",
 			    DEVNAME(sc));
 			return (0);
 		}
 		ccb->gc_service = service;
+		ccb->gc_xs = NULL;
+		ccb->gc_blockno = ccb->gc_blockcnt = 0;
+		ccb->gc_timeout = ccb->gc_flags = 0;
+		ccb->gc_service = GDT_CACHESERVICE;
 		gdt_ccb_set_cmd(ccb, GDT_GCF_INTERNAL);
 
 		sc->sc_set_sema0(sc);
@@ -1282,7 +1216,11 @@ gdt_internal_cmd(struct gdt_softc *sc, u_int8_t service, u_int16_t opcode,
 		sc->sc_copy_cmd(sc, ccb);
 		sc->sc_release_event(sc, ccb);
 		DELAY(20);
-		if (!gdt_wait(sc, ccb, GDT_POLL_TIMEOUT))
+
+		rslt = gdt_wait(sc, ccb, GDT_POLL_TIMEOUT);
+		scsi_io_put(&sc->sc_iopool, ccb);
+
+		if (!rslt)
 			return (0);
 		if (sc->sc_status != GDT_S_BSY || --retries == 0)
 			break;
@@ -1291,48 +1229,41 @@ gdt_internal_cmd(struct gdt_softc *sc, u_int8_t service, u_int16_t opcode,
 	return (sc->sc_status == GDT_S_OK);
 }
 
-struct gdt_ccb *
-gdt_get_ccb(struct gdt_softc *sc, int flags)
+void *
+gdt_ccb_alloc(void *xsc)
 {
+	struct gdt_softc *sc = xsc;
 	struct gdt_ccb *ccb;
-	int s;
 
-	GDT_DPRINTF(GDT_D_QUEUE, ("gdt_get_ccb(%p, 0x%x) ", sc, flags));
+	GDT_DPRINTF(GDT_D_QUEUE, ("gdt_ccb_alloc(%p) ", sc));
 
-	s = splbio();
+	mtx_enter(&sc->sc_ccb_mtx);
+	ccb = TAILQ_FIRST(&sc->sc_free_ccb);
+	if (ccb != NULL)
+		TAILQ_REMOVE(&sc->sc_free_ccb, ccb, gc_chain);
+	mtx_leave(&sc->sc_ccb_mtx);
 
-	for (;;) {
-		ccb = TAILQ_FIRST(&sc->sc_free_ccb);
-		if (ccb != NULL)
-			break;
-		if (flags & SCSI_NOSLEEP)
-			goto bail_out;
-		tsleep(&sc->sc_free_ccb, PRIBIO, "gdt_ccb", 0);
-	}
-
-	TAILQ_REMOVE(&sc->sc_free_ccb, ccb, gc_chain);
-
- bail_out:
-	splx(s);
 	return (ccb);
 }
 
 void
-gdt_free_ccb(struct gdt_softc *sc, struct gdt_ccb *ccb)
+gdt_ccb_free(void *xsc, void *xccb)
 {
-	int s;
+	struct gdt_softc *sc = xsc;
+	struct gdt_ccb *ccb = xccb;
+	int wake = 0;
 
-	GDT_DPRINTF(GDT_D_QUEUE, ("gdt_free_ccb(%p, %p) ", sc, ccb));
+	GDT_DPRINTF(GDT_D_QUEUE, ("gdt_ccb_free(%p, %p) ", sc, ccb));
 
-	s = splbio();
-
+	mtx_enter(&sc->sc_ccb_mtx);
 	TAILQ_INSERT_HEAD(&sc->sc_free_ccb, ccb, gc_chain);
-
 	/* If the free list was empty, wake up potential waiters. */
 	if (TAILQ_NEXT(ccb, gc_chain) == NULL)
-		wakeup(&sc->sc_free_ccb);
+		wake = 1;
+	mtx_leave(&sc->sc_ccb_mtx);
 
-	splx(s);
+	if (wake)
+		wakeup(&sc->sc_free_ccb);
 }
 
 void

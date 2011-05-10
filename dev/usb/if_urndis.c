@@ -1,4 +1,4 @@
-/*	$OpenBSD: if_urndis.c,v 1.28 2011/01/16 22:35:29 jakemsr Exp $ */
+/*	$OpenBSD: if_urndis.c,v 1.30 2011/05/05 17:00:43 sthen Exp $ */
 
 /*
  * Copyright (c) 2010 Jonathan Armani <armani@openbsd.org>
@@ -135,7 +135,8 @@ struct cfattach urndis_ca = {
  * Supported devices that we can't match by class IDs.
  */
 static const struct usb_devno urndis_devs[] = {
-	{ USB_VENDOR_HTC,	USB_PRODUCT_HTC_ANDROID }
+	{ USB_VENDOR_HTC,	USB_PRODUCT_HTC_ANDROID },
+	{ USB_VENDOR_SAMSUNG2,	USB_PRODUCT_SAMSUNG2_ANDROID }
 };
 
 usbd_status
@@ -1509,8 +1510,6 @@ urndis_attach(struct device *parent, struct device *self, void *aux)
 	sc->sc_attached = 1;
 
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev, &sc->sc_dev);
 }
 
 int
@@ -1541,9 +1540,6 @@ urndis_detach(struct device *self, int flags)
 	sc->sc_attached = 0;
 
 	splx(s);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-	    &sc->sc_dev);
 
 	return 0;
 }

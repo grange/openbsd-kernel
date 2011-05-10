@@ -1,4 +1,4 @@
-/*	$OpenBSD: disksubr.c,v 1.64 2010/04/23 15:25:20 jsing Exp $	*/
+/*	$OpenBSD: disksubr.c,v 1.68 2011/04/16 03:21:15 krw Exp $	*/
 /*
  * Copyright (c) 1998 Steve Murphree, Jr.
  * Copyright (c) 1995 Dale Rahn.
@@ -42,9 +42,7 @@ int	cputobsdlabel(struct disklabel *, struct mvmedisklabel *);
  * The label must be partly set up before this:
  * secpercyl and anything required in the strategy routine
  * (e.g., sector size) must be filled in before calling us.
- * Returns NULL on success and an error string on failure.
  */
-
 int
 readdisklabel(dev_t dev, void (*strat)(struct buf *),
     struct disklabel *lp, int spoofonly)
@@ -65,7 +63,8 @@ readdisklabel(dev_t dev, void (*strat)(struct buf *),
 
 	bp->b_blkno = LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if (biowait(bp)) {
 		error = bp->b_error;
@@ -92,6 +91,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 
@@ -111,14 +111,16 @@ writedisklabel(dev_t dev, void (*strat)(struct buf *), struct disklabel *lp)
 	/* Read it in, slap the new label in, and write it back out */
 	bp->b_blkno = LABELSECTOR;
 	bp->b_bcount = lp->d_secsize;
-	bp->b_flags = B_BUSY | B_READ | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_READ | B_RAW);
 	(*strat)(bp);
 	if ((error = biowait(bp)) != 0)
 		goto done;
 
 	bsdtocpulabel(lp, (struct mvmedisklabel *)bp->b_data);
 
-	bp->b_flags = B_BUSY | B_WRITE | B_RAW;
+	CLR(bp->b_flags, B_READ | B_WRITE | B_DONE);
+	SET(bp->b_flags, B_BUSY | B_WRITE | B_RAW);
 	(*strat)(bp);
 	error = biowait(bp);
 
@@ -127,6 +129,7 @@ done:
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 	}
+	disk_change = 1;
 	return (error);
 }
 

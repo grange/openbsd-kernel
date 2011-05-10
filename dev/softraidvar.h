@@ -1,4 +1,4 @@
-/* $OpenBSD: softraidvar.h,v 1.96 2010/11/06 23:01:56 marco Exp $ */
+/* $OpenBSD: softraidvar.h,v 1.99 2011/04/05 19:52:02 krw Exp $ */
 /*
  * Copyright (c) 2006 Marco Peereboom <marco@peereboom.us>
  * Copyright (c) 2008 Chris Kuethe <ckuethe@openbsd.org>
@@ -55,7 +55,7 @@ struct sr_uuid {
 
 struct sr_disk {
 	dev_t			sdk_devno;
-	SLIST_ENTRY(sr_disk) 	sdk_link;
+	SLIST_ENTRY(sr_disk)	sdk_link;
 };
 SLIST_HEAD(sr_disk_head, sr_disk);
 
@@ -64,7 +64,7 @@ struct sr_metadata {
 		/* do not change order of ssd_magic, ssd_version */
 		u_int64_t	ssd_magic;	/* magic id */
 #define	SR_MAGIC		0x4d4152436372616dLLU
-		u_int32_t	ssd_version; 	/* meta data version */
+		u_int32_t	ssd_version;	/* meta data version */
 		u_int32_t	ssd_vol_flags;	/* volume specific flags. */
 		struct sr_uuid	ssd_uuid;	/* unique identifier */
 
@@ -424,7 +424,7 @@ struct sr_boot_volume {
 
 	struct sr_metadata_list_head	sml;	/* List of metadata. */
 
-	SLIST_ENTRY(sr_boot_volume)	sbv_link;	
+	SLIST_ENTRY(sr_boot_volume)	sbv_link;
 };
 
 SLIST_HEAD(sr_boot_volume_head, sr_boot_volume);
@@ -453,7 +453,7 @@ struct sr_volume {
 
 	/* sensors */
 	struct ksensor		sv_sensor;
-	struct ksensordev	sv_sensordev;
+	int			sv_sensor_attached;
 	int			sv_sensor_valid;
 };
 
@@ -524,7 +524,9 @@ struct sr_discipline {
 	struct sr_wu_list	sd_wu_freeq;	/* free wu queue */
 	struct sr_wu_list	sd_wu_pendq;	/* pending wu queue */
 	struct sr_wu_list	sd_wu_defq;	/* deferred wu queue */
-	int			sd_wu_sleep;	/* wu sleepers counter */
+
+	struct mutex		sd_wu_mtx;
+	struct scsi_iopool	sd_iopool;
 
 	/* discipline stats */
 	int			sd_wu_pending;
@@ -573,7 +575,9 @@ struct sr_softc {
 	struct rwlock		sc_hs_lock;	/* Lock for hotspares list. */
 	int			sc_hotspare_no; /* Number of hotspares. */
 
+	struct ksensordev	sc_sensordev;
 	int			sc_sensors_running;
+
 	/*
 	 * during scsibus attach this is the discipline that is in use
 	 * this variable is protected by sc_lock and splhigh
@@ -602,8 +606,8 @@ struct sr_ccb		*sr_ccb_get(struct sr_discipline *);
 void			sr_ccb_put(struct sr_ccb *);
 int			sr_wu_alloc(struct sr_discipline *);
 void			sr_wu_free(struct sr_discipline *);
-struct sr_workunit	*sr_wu_get(struct sr_discipline *, int);
-void			sr_wu_put(struct sr_workunit *);
+void			*sr_wu_get(void *);
+void			sr_wu_put(void *, void *);
 
 /* misc functions */
 int32_t			sr_validate_stripsize(u_int32_t);

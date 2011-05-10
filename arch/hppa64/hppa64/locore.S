@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.S,v 1.11 2010/12/21 14:56:23 claudio Exp $	*/
+/*	$OpenBSD: locore.S,v 1.27 2011/05/05 20:48:34 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2005 Michael Shalayeff
@@ -38,6 +38,7 @@
 	.import esym, data
 	.import proc0, data
 	.import proc0paddr, data
+	.import proc0fpstate, data
 
 #define	EMRG_STACKSIZE	(1*PAGE_SIZE)
 #define	FPEMU_STACKSIZE	(1*PAGE_SIZE)
@@ -45,11 +46,6 @@
 	.data
 
 	.align	16
-$kpsl
-	.word	PSL_W | PSL_Q | PSL_P | PSL_C | PSL_D | PSL_S | PSL_O
-	.export cpl, data
-cpl
-	.word	IPL_HIGH
 
 	BSS(pdc_stack, 8)	/* temp stack for PDC call */
 	BSS(emrg_stack, 8)	/* stack for HPMC/TOC/PWRF */
@@ -93,6 +89,15 @@ $start
 	mtctl	%r0, %eiem
 	mtctl	%r1, %eirr
 	mtctl	%r0, %cr10	/* ccr */
+
+	ldil	L%cpu0_info, %r1
+	ldo	R%cpu0_info(%r1), %r1
+	mtctl	%r1, %cr24
+	ldil	L%(PSL_W|PSL_Q|PSL_P|PSL_C|PSL_D|PSL_S|PSL_O), %r8
+	ldo	R%(PSL_W|PSL_Q|PSL_P|PSL_C|PSL_D|PSL_S|PSL_O)(%r8), %r8
+	stw	%r8, CI_PSW(%r1)
+	ldi	IPL_HIGH, %r8
+	stw	%r8, CI_CPL(%r1)
 
 	ldil	L%pdc, %r1
 	std	%arg0, R%pdc(%r1)
@@ -197,10 +202,8 @@ $start_zero_tf
 	std	%arg3, R%proc0paddr(%r1)
 
 	ldo	PAGE_SIZE(%arg3), %sp
-	mtctl	%arg3, %cr30
 	std	%r0, U_PCB+PCB_ONFAULT(%arg3)
 	std	%r0, U_PCB+PCB_SPACE(%arg3)
-	std	%arg3, U_PCB+PCB_UVA(%arg3)
 
 	ldil	L%proc0, %r1
 	ldo	R%proc0(%r1), %r1
@@ -210,10 +213,13 @@ $start_zero_tf
 
 	ldil	TFF_LAST, %r1
 	std	%r1, TF_FLAGS(%arg2)
-	std	%arg3, TF_CR30(%arg2)
+	ldil	L%proc0fpstate, %r1
+	ldo	R%proc0fpstate(%r1), %r1
+	std	%r1, TF_CR30(%arg2)
+	mtctl	%r1, %cr30
 
-	ldil	L%$kpsl, %r1
-	ldw	R%$kpsl(%r1), arg7
+	mfctl	%cr24, %r1
+	ldw	CI_PSW(%r1), arg7
 	ldil	L%$start_virt, %r31
 	ldo	R%$start_virt(%r31), %r31
 	ldil	L%$ivaaddr, %r1
@@ -257,11 +263,26 @@ ENTRY(pdc_call,160)
 	ldil	L%pdc_stack, %r1
 	ldd	R%pdc_stack(%r1), %r3
 	copy	%r3, %sp
-	std,ma	%r31, 32+12*4+12*8(%sp)	/* old frame+args+save(64) */
+	std,ma	%r31, 32+12*4+28*8(%sp)	/* old frame+args+save(64) */
 
 	mfctl	%eiem, %r1
 	mtctl	%r0, %eiem
 	std	%r1, 1*8(%r3)
+	std	%r4, 12*8(%r3)
+	std	%r5, 13*8(%r3)
+	std	%r6, 14*8(%r3)
+	std	%r7, 15*8(%r3)
+	std	%r8, 16*8(%r3)
+	std	%r9, 17*8(%r3)
+	std	%r10, 18*8(%r3)
+	std	%r11, 19*8(%r3)
+	std	%r12, 20*8(%r3)
+	std	%r13, 21*8(%r3)
+	std	%r14, 22*8(%r3)
+	std	%r15, 23*8(%r3)
+	std	%r16, 24*8(%r3)
+	std	%r17, 25*8(%r3)
+	std	%r18, 26*8(%r3)
 
 	copy	%arg0, %r31
 	/* copy arguments */
@@ -306,6 +327,7 @@ ENTRY(pdc_call,160)
 	std	%ret0, 11*8(%r3)	/* old %sp */
 	ldi	PSL_Q, %arg0
 	break	HPPA_BREAK_KERNEL, HPPA_BREAK_SET_PSW
+	std	%ret0, 27*8(%r3)
 	copy	%ret1, %arg0
 
 	.call
@@ -331,13 +353,27 @@ ENTRY(pdc_call,160)
 	mtctl	arg6, %cr30
 	mtctl	arg7, %cr31
 
-	ldil	L%$kpsl, %r1
-	ldw	R%$kpsl(%r1), %arg0
+	ldd	27*8(%r3), %arg0
 	copy	%ret0, %arg1
 	break	HPPA_BREAK_KERNEL, HPPA_BREAK_SET_PSW
 	copy	%arg1, %ret0
 
 	ldd	1*8(%r3), arg5	/* %eiem */
+	ldd	26*8(%r3), %r18
+	ldd	25*8(%r3), %r17
+	ldd	24*8(%r3), %r16
+	ldd	23*8(%r3), %r15
+	ldd	22*8(%r3), %r14
+	ldd	21*8(%r3), %r13
+	ldd	20*8(%r3), %r12
+	ldd	19*8(%r3), %r11
+	ldd	18*8(%r3), %r10
+	ldd	17*8(%r3), %r9
+	ldd	16*8(%r3), %r8
+	ldd	15*8(%r3), %r7
+	ldd	14*8(%r3), %r6
+	ldd	13*8(%r3), %r5
+	ldd	12*8(%r3), %r4
 	ldd	11*8(%r3), %sp
 	ldd	HPPA_FRAME_RP(%sp), %rp
 	ldd	0(%r3), %r3
@@ -383,7 +419,158 @@ $syscall_return
 
 	mtctl	%r0, %eiem
 
-	ldo	8(%arg0), %r31	/* flags */
+	/*
+	 * Store registers in physical trap save area for restore after the
+	 * system mask has been reset and we are no longer in virtual mode.
+	 */
+	mfctl	%cr24, %r1
+	ldo	CI_TRAP_SAVE(%r1), %r1
+
+	ldd	TF_ARGS+4*8(%arg0), %arg2	/* arg3 */
+	ldd	TF_ARGS+5*8(%arg0), %arg3	/* arg2 */
+	std	%arg2, 0*8(%r1)
+	std	%arg3, 1*8(%r1)
+
+	ldd	TF_ARGS+6*8(%arg0), %arg2	/* arg1 */
+	ldd	TF_ARGS+7*8(%arg0), %arg3	/* arg0 */
+	std	%arg2, 2*8(%r1)
+	std	%arg3, 3*8(%r1)
+
+	ldd	TF_IIOQ+0(%arg0), %arg2		/* pcoq */
+	ldd	TF_IIOQ+8(%arg0), %arg3
+	std	%arg2, 4*8(%r1)
+	std	%arg3, 5*8(%r1)
+
+	ldd	TF_IISQ+0(%arg0), %arg2		/* pcsq */
+	ldd	TF_IISQ+8(%arg0), %arg3
+	std	%arg2, 6*8(%r1)
+	std	%arg3, 7*8(%r1)
+
+	ldd	TF_PIDR1(%arg0), %arg2		/* pidr1 */
+	ldd	TF_PIDR2(%arg0), %arg3		/* pidr2 */
+	std	%arg2, 8*8(%r1)
+	std	%arg3, 9*8(%r1)
+
+	ldd	TF_SR0(%arg0), %arg2		/* sr0 */
+	ldd	TF_SR1(%arg0), %arg3		/* sr1 */
+	std	%arg2, 10*8(%r1)
+	std	%arg3, 11*8(%r1)
+
+	ldd	TF_IPSW(%arg0), %arg2		/* ipsw */
+	ldd	TF_EIEM(%arg0), %arg3		/* eiem */
+	std	%arg2, 12*8(%r1)
+	std	%arg3, 13*8(%r1)
+
+	ldd	TF_SP(%arg0), %arg2		/* sp */
+	std	%arg2, 14*8(%r1)
+
+	/*
+	 * Restore general registers.
+	 */
+	ldd	TF_R1(%arg0), %r1
+	ldd	TF_RP(%arg0), %rp
+	ldd	TF_R3(%arg0), %r3
+	ldd	TF_R4(%arg0), %r4
+	ldd	TF_R5(%arg0), %r5
+	ldd	TF_R6(%arg0), %r6
+	ldd	TF_R7(%arg0), %r7
+	ldd	TF_R8(%arg0), %r8
+	ldd	TF_R9(%arg0), %r9
+	ldd	TF_R10(%arg0), %r10
+	ldd	TF_R11(%arg0), %r11
+	ldd	TF_R12(%arg0), %r12
+	ldd	TF_R13(%arg0), %r13
+	ldd	TF_R14(%arg0), %r14
+	ldd	TF_R15(%arg0), %r15
+	ldd	TF_R16(%arg0), %r16
+	ldd	TF_R17(%arg0), %r17
+	ldd	TF_R18(%arg0), %r18
+	ldd	TF_ARGS+0*8(%arg0), %r19
+	ldd	TF_ARGS+1*8(%arg0), %r20
+	ldd	TF_ARGS+2*8(%arg0), %r21
+	ldd	TF_ARGS+3*8(%arg0), %r22
+	/* Restore arg3, arg2, arg1 and arg0 later. */
+	ldd	TF_DP(%arg0), %r27
+	ldd	TF_RET0(%arg0), %r28
+	ldd	TF_RET1(%arg0), %r29
+	/* Restore sp later. */
+	ldd	TF_R31(%arg0), %r31
+
+	/* Restore control registers. */
+	ldd	TF_RCTR(%arg0), %arg2		/* rctr */
+	ldd	TF_CCR(%arg0), %arg3		/* ccr */
+	mtctl	%arg2, %cr0
+	mtctl	%arg3, %cr10
+
+	ldd	TF_IOR(%arg0), %arg2		/* ior */
+	ldd	TF_ISR(%arg0), %arg3		/* isr */
+	mtctl	%arg2, %cr27
+	mtsp	%arg3, %sr6
+
+	ldd	TF_SAR(%arg0), %arg2		/* sar */
+	ldd	TF_VTOP(%arg0), %arg3		/* vtop */
+	mtctl	%arg2, %sar
+	mtctl	%arg3, %cr25
+
+	ldd	TF_CR30(%arg0), %arg2		/* pa(u) */
+	ldd	TF_CR27(%arg0), %arg3		/* user curthread */
+	mtctl	%arg2, %cr30
+	mtctl	%arg3, %cr27
+
+	ldd	TF_SR2(%arg0), %arg2
+	ldd	TF_SR3(%arg0), %arg3
+	mtsp	%arg2, %sr2
+	mtsp	%arg3, %sr3
+
+	ldd	TF_SR6(%arg0), %arg2
+	ldd	TF_SR7(%arg0), %arg3
+	mtsp	%arg2, %sr6
+	mtsp	%arg3, %sr7
+
+	ldd	TF_SR4(%arg0), %arg2
+	ldd	TF_SR5(%arg0), %arg3
+	mtsp	%arg2, %sr4
+	mtsp	%arg3, %sr5
+
+	/* Clear system masks before restoring queues and space registers. */
+	rsm	(PSL_R|PSL_Q|PSL_P|PSL_I|PSL_D), %r0
+	nop ! nop ! nop ! nop
+
+	mfctl	%cr24, %arg0
+	ldo	CI_TRAP_SAVE(%arg0), %arg0
+
+	ldd	4*8(%arg0), %arg2		/* pcoq */
+	ldd	5*8(%arg0), %arg3
+	mtctl	%arg2, %pcoq
+	mtctl	%arg3, %pcoq
+
+	ldd	6*8(%arg0), %arg2		/* pcsq */
+	ldd	7*8(%arg0), %arg3
+	mtctl	%arg2, %pcsq
+	mtctl	%arg3, %pcsq
+
+	ldd	8*8(%arg0), %arg2		/* pidr1 */
+	ldd	9*8(%arg0), %arg3		/* pidr2 */
+	mtctl	%arg2, %pidr1
+	mtctl	%arg3, %pidr2
+
+	ldd	10*8(%arg0), %arg2		/* sr0 */
+	ldd	11*8(%arg0), %arg3		/* sr1 */
+	mtsp	%arg2, %sr0
+	mtsp	%arg3, %sr1
+
+	ldd	12*8(%arg0), %arg2		/* ipsw */
+	ldd	13*8(%arg0), %arg3		/* eiem */
+	mtctl	%arg2, %ipsw
+	mtctl	%arg3, %eiem
+
+	ldd	14*8(%arg0), %sp		/* sp */
+
+	/* Restore temporary registers. */
+	ldd	0*8(%arg0), %arg3
+	ldd	1*8(%arg0), %arg2
+	ldd	2*8(%arg0), %arg1
+	ldd	3*8(%arg0), %arg0
 
 	rfi
 	nop
@@ -621,33 +808,35 @@ ENTRY(TLABEL(all),0)
 	mtctl	%r9, %pcoq
 	mtctl	%r25, %cr29
 
-	ldil	L%$kpsl, %r9
-	ldw	R%$kpsl(%r9), %r9
+	mfctl	%cr24, %r9
+	ldw	CI_PSW(%r9), %r9
+	depi	0, PSL_I_POS, 1, %r9	/* Leave interrupts disabled. */
 	mtctl	%r9, %ipsw
-
-	mfctl	%cr30, %r9
 
 	mfsp	%sr0, %r8
 	extrd,u,*<> %r24, 63, 2, %r0	/* still pcoq head */
 	cmpb,*= %r0, %r8, TLABEL(all_kern)
 	copy	%sp, %r17
 
+	mfctl	%cr24, %r9
+	ldd	CI_CURPROC(%r9), %r9
 	depdi	1, T_USER_POS, 1, %r1
 	depdi	1, TFF_LAST_POS, 1, %r1
-	ldd	U_PCB+PCB_UVA(%r9), %sp
+	ldd	P_ADDR(%r9), %sp
 	ldo	PAGE_SIZE-TRAPFRAME_SIZEOF(%sp), %sp
 
 TLABEL(all_kern)
 	ldo	127(%sp), %sp
 	depdi	0, 63, 7, %sp
 
-	ldo	TF_SP(%sp), %r8
-	std	%r17, 0(%r8)
+	mfctl	%cr24, %r8
+	ldo	CI_TRAP_SAVE(%r8), %r8
+	std	%r17, 0(%r8)			/* sp */
 	fdc	%r0(%r8)
+	ldo	8(%r8), %r8
 
 	mfctl	%iir, %r16
-	ldo	TF_IIR(%sp), %r8
-	std	%r16, 0(%r8)
+	std	%r16, 0(%r8)			/* iir */
 	fdc	%r0(%r8)
 
 	mtctl	%r1, %cr26
@@ -696,12 +885,21 @@ TLABEL(all_virt)
 	mfsp	%sr1, %arg3
 	std,ma	%arg2, 8(%sr3,%sp)	/* %sr0 */
 	std,ma	%arg3, 8(%sr3,%sp)	/* %sr1 */
+
+	mfsp	%sr2, %arg2
+	mfsp	%sr3, %arg3
 	std,ma	%arg2, 8(%sr3,%sp)	/* %sr2 */
-	std,ma	%arg2, 8(%sr3,%sp)	/* %sr3 */
+	std,ma	%arg3, 8(%sr3,%sp)	/* %sr3 */
+
+	mfsp	%sr4, %arg2
+	mfsp	%sr5, %arg3
 	std,ma	%arg2, 8(%sr3,%sp)	/* %sr4 */
-	std,ma	%arg2, 8(%sr3,%sp)	/* %sr5 */
+	std,ma	%arg3, 8(%sr3,%sp)	/* %sr5 */
+
+	mfsp	%sr6, %arg2
+	mfsp	%sr7, %arg3
 	std,ma	%arg2, 8(%sr3,%sp)	/* %sr6 */
-	std,ma	%arg2, 8(%sr3,%sp)	/* %sr7 */
+	std,ma	%arg3, 8(%sr3,%sp)	/* %sr7 */
 
 	mfctl	%cr0, %arg3
 	mfctl	%cr10, %arg2
@@ -748,7 +946,7 @@ TLABEL(all_virt)
 
 	mfctl	%cr30, %arg2
 	mfctl	%cr27, %arg3		/* XXX */
-	std,ma	%arg2, 8(%sr3,%sp)	/* pa(u) */
+	std,ma	%arg2, 8(%sr3,%sp)
 	std,ma	%arg3, 8(%sr3,%sp)	/* user curthread */
 
 	mfctl	%sar, %arg2
@@ -762,6 +960,14 @@ TLABEL(all_virt)
 	mtsp	%r0, %sr5
 	mtsp	%r0, %sr6
 	mtsp	%r0, %sr7
+
+	/* Copy sp and iir from physical trap save area. */
+	mfctl	%cr24, %r1
+	ldo	CI_TRAP_SAVE(%r1), %r1
+	ldd	0*8(%r1), %arg2
+	ldd	1*8(%r1), %arg3
+	std	%arg2, TF_SP(%arg1)
+	std	%arg3, TF_IIR(%arg1)
 
 	ldo	TRAPFRAME_SIZEOF(%arg1), %sp
 	copy	%sp, %r3
@@ -819,6 +1025,8 @@ EXIT(TLABEL(all))
 
 TLABEL(itlb)
 	PTPULL(0, TLABEL(all))
+	extrd,u,*= %r17, 5, 1, %r0	/* gateway page needs to be public */
+	depdi	0, 62, 31, %r17
 	iitlbt	%r16, %r17
 	rfi,r
 	nop
@@ -865,8 +1073,8 @@ ENTRY(TLABEL(excpt),0)
 	copy	%rp, %r1
 	copy	%arg0, %r8
 	mfctl	%cr30, %r9
-#if (PCB_FPREGS+U_PCB) != 0
-	ldo	PCB_FPREGS+U_PCB(%r9), %r9
+#if FP_REGS != 0
+	ldo	HFP_REGS(%r9), %r9
 #endif
 	.import	fpu_save, code
 	.call
@@ -972,17 +1180,17 @@ $fpusw_set
 	depdi	3, 37, 2, %r1
 	mtctl	%r1, %cr10	/* ccr */
 
-	ldil	L%fpu_curpcb, %r16
+	mfctl	%cr24, %r16
 	mfctl	%cr30, %r9
-	ldd	R%fpu_curpcb(%r16), %r16
+	ldd	CI_FPU_STATE(%r16), %r16
 
 	comb,=,n %r16, %r0, $fpusw_nosave
 	comb,=,n %r16, %r9, $fpusw_done
 
 	copy	%arg0, %r17
 	copy	%rp, %r1
-#if (PCB_FPREGS+U_PCB) != 0
-	ldo	PCB_FPREGS+U_PCB(%r16), %r16
+#if HFP_REGS != 0
+	ldo	HFP_REGS(%r16), %r16
 #endif
 	.import	fpu_save, code
 	.call
@@ -996,7 +1204,7 @@ $fpusw_nosave
 	.import	umvexp, data
 	ldil	L%(uvmexp+FPSWTCH), %r1
 	ldw	R%(uvmexp+FPSWTCH)(%r1), %r16
-	ldo	31*8+PCB_FPREGS+U_PCB(%r9), %r17
+	ldo	31*8+HFP_REGS(%r9), %r17
 	ldo	1(%r16), %r16
 	stw	%r16, R%(uvmexp+FPSWTCH)(%r1)
 
@@ -1033,8 +1241,10 @@ $fpusw_nosave
 	fldds,ma -8(%r17), %fr1
 	fldds     0(%r17), %fr0	/* fr0 must be restored last */
 
-	ldil	L%fpu_curpcb, %r1
-	std	%r17, R%fpu_curpcb(%r1)
+	mfctl	%cr24, %r1
+	std	%r9, CI_FPU_STATE(%r1)
+	std	%r1, HFP_CPU(%r9)
+	sync
 
 $fpusw_done
 	rfir
@@ -1334,8 +1544,8 @@ LEAF_ENTRY(copy_on_fault)
 	mtsp	%r0, %sr1
 	mtsp	%r0, %sr2
 	std	%r1, PCB_ONFAULT+U_PCB(%rp)
-	ldd	HPPA_FRAME_RP(%sp), %rp
 	ldo	-HPPA_FRAME_SIZE(%sp), %sp
+	ldd	HPPA_FRAME_RP(%sp), %rp
 	bv	%r0(%rp)
 	ldi	EFAULT, %ret0
 EXIT(copy_on_fault)
@@ -1364,10 +1574,10 @@ LEAF_ENTRY(spstrcpy)
 	ldo	HPPA_FRAME_SIZE(%sp), %sp
 	add	arg4, %arg1, arg4
 	/* setup fault handler */
-	mfctl	%cr24, %arg1
-	ldd	CI_CURPROC(%arg1), %r1
+	mfctl	%cr24, %r1
+	ldd	CI_CURPROC(%r1), %r1
 	ldil	L%copy_on_fault, arg7
-	ldd	P_ADDR(arg6), %rp
+	ldd	P_ADDR(%r1), %rp
 	ldo	R%copy_on_fault(arg7), arg7
 	ldd	PCB_ONFAULT+U_PCB(%rp), %r1
 	std	arg7, PCB_ONFAULT+U_PCB(%rp)
@@ -1375,13 +1585,15 @@ LEAF_ENTRY(spstrcpy)
 	mtsp	%arg0, %sr1
 	mtsp	%arg2, %sr2
 	copy	%arg1, %arg0
+	copy	%r0, %ret0
 
 $spstrcpy_loop
 	ldbs,ma	1(%sr1, %arg1), arg7
-	comb,=	arg4, %arg1, $spstrcpy_exit
+	comb,=	%r0, arg7, $spstrcpy_exit
 	stbs,ma	arg7, 1(%sr2, %arg3)
-	comb,<>,n %r0, arg7, $spstrcpy_loop
+	comb,<>,n arg4, %arg1, $spstrcpy_loop
 	nop
+	ldi	ENAMETOOLONG, %ret0
 
 $spstrcpy_exit
 	ldo	-HPPA_FRAME_SIZE(%sp), %sp
@@ -1391,9 +1603,9 @@ $spstrcpy_exit
 	sub	%arg1, %arg0, %arg1
 	ldd	HPPA_FRAME_RP(%sp), %rp
 	sub,=	%r0, arg5, %r0
-	stw	%arg1, 0(arg5)
+	std	%arg1, 0(arg5)
 	bv	0(%rp)
-	copy	%r0, %ret0
+	nop
 EXIT(spstrcpy)
 
 LEAF_ENTRY(setjmp)
@@ -1599,8 +1811,8 @@ switch_tramp_p
 	.dword	switch_trampoline
 
 ENTRY(switch_trampoline,0)
-	ldil	L%cpl, %r1
-	stw	%r0, R%cpl(%r1)
+	mfctl	%cr24, %r1
+	stw	%r0, CI_CPL(%r1)
 
 	/* ldd	0x18(%arg3), %r19	but we know we are in kernel! */
 	ldd	0x10(%arg3), %arg3
@@ -1650,12 +1862,9 @@ EXIT(curcpu)
  * int splraise(int newcpl);
  */
 LEAF_ENTRY(splraise)
-	bv	%r0(%rp)
-	nop
-
 	extrd,u	%arg0, 63, 32, %arg0
 #ifdef DEBUG
-	cmpib,<=,n NIPL, %arg0, splraise_ok
+	cmpib,>,n NIPL, %arg0, splraise_ok
 	copy	%arg0, %arg1
 	ldil	L%splraise_fmt, %arg0
 	b,l	panic, %rp
@@ -1670,14 +1879,14 @@ splraise_ok
 	sync
 	mfctl	%eiem, %arg2
 	mtctl	%r0, %eiem
-	ldil	L%cpl, %r1
-	ldw	R%cpl(%r1), %ret0
+	mfctl	%cr24, %r1
+	ldw	CI_CPL(%r1), %ret0
 	ldil	L%imask, %arg3
 	ldo	R%imask(%arg3), %arg3
 	sub,<=	%arg0, %ret0, %r0
 	ldd,s	%arg0(%arg3), %arg2
 	sub,<=	%arg0, %ret0, %r0
-	stw	%arg0, R%cpl(%r1)
+	stw	%arg0, CI_CPL(%r1)
 	sync
 	bv	%r0(%rp)
 	mtctl	%arg2, %eiem
@@ -1687,12 +1896,9 @@ EXIT(splraise)
  * int spllower(int newcpl);
  */
 LEAF_ENTRY(spllower)
-	bv	%r0(%rp)
-	nop
-
 	extrd,u	%arg0, 63, 32, %arg0
 #ifdef DEBUG
-	cmpib,<=,n NIPL, %arg0, spllower_ok
+	cmpib,>,n NIPL, %arg0, spllower_ok
 	copy	%arg0, %arg1
 	ldil	L%spllower_fmt, %arg0
 	b,l	panic, %rp
@@ -1707,14 +1913,14 @@ spllower_ok
 	sync
 	mfctl	%eiem, %arg2
 	mtctl	%r0, %eiem
-	ldil	L%cpl, %r1
-	ldw	R%cpl(%r1), %ret0
+	mfctl	%cr24, %r1
+	ldw	CI_CPL(%r1), %ret0
 	ldil	L%imask, %arg3
 	ldo	R%imask(%arg3), %arg3
 	sub,>=	%arg0, %ret0, %r0
 	ldd,s	%arg0(%arg3), %arg2
 	sub,>=	%arg0, %ret0, %r0
-	stw	%arg0, R%cpl(%r1)
+	stw	%arg0, CI_CPL(%r1)
 	sync
 	bv	%r0(%rp)
 	mtctl	%arg2, %eiem

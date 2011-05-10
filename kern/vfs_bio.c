@@ -1,4 +1,4 @@
-/*	$OpenBSD: vfs_bio.c,v 1.127 2010/11/13 17:45:44 deraadt Exp $	*/
+/*	$OpenBSD: vfs_bio.c,v 1.129 2011/04/07 19:07:42 beck Exp $	*/
 /*	$NetBSD: vfs_bio.c,v 1.44 1996/06/11 11:15:36 pk Exp $	*/
 
 /*
@@ -191,19 +191,22 @@ buf_put(struct buf *bp)
 void
 bufinit(void)
 {
+	u_int64_t dmapages;
 	struct bqueues *dp;
 
 	/* XXX - for now */
 	bufhighpages = buflowpages = bufpages = bufcachepercent = bufkvm = 0;
 
+	dmapages = uvm_pagecount(&dma_constraint);
+
 	/*
 	 * If MD code doesn't say otherwise, use 10% of kvm for mappings and
-	 * 10% physmem for pages.
+	 * 10% of dmaable pages for cache pages.
 	 */
 	if (bufcachepercent == 0)
 		bufcachepercent = 10;
 	if (bufpages == 0)
-		bufpages = physmem * bufcachepercent / 100;
+		bufpages = dmapages * bufcachepercent / 100;
 
 	bufhighpages = bufpages;
 
@@ -212,7 +215,7 @@ bufinit(void)
 	 * we will not allow uvm to steal back more than this number of
 	 * pages
 	 */
-	buflowpages = physmem * 10 / 100;
+	buflowpages = dmapages * 10 / 100;
 
 	/*
 	 * set bufbackpages to 100 pages, or 10 percent of the low water mark
@@ -460,9 +463,10 @@ bread_cluster_callback(struct buf *bp)
 		size_t newsize = xbpp[1]->b_bufsize;
 
 		/*
-		 * Shrink this buffer to only cover its part of the total I/O.
+		 * Shrink this buffer's mapping to only cover its part of
+		 * the total I/O.
 		 */
-		buf_shrink_mem(bp, newsize);
+		buf_fix_mapping(bp, newsize);
 		bp->b_bcount = newsize;
 	}
 

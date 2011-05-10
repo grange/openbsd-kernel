@@ -1,4 +1,4 @@
-/*	$OpenBSD: ueagle.c,v 1.31 2010/12/06 05:46:17 jakemsr Exp $	*/
+/*	$OpenBSD: ueagle.c,v 1.33 2011/03/22 16:31:19 deraadt Exp $	*/
 
 /*-
  * Copyright (c) 2003-2006
@@ -229,9 +229,6 @@ ueagle_attach(struct device *parent, struct device *self, void *aux)
 #if NBPFILTER > 0
 	bpfattach(&ifp->if_bpf, ifp, DLT_RAW, 0);
 #endif
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_ATTACH, sc->sc_udev,
-	    &sc->sc_dev);
 }
 
 int
@@ -258,9 +255,6 @@ ueagle_detach(struct device *self, int flags)
 
 	if (ifp->if_softc != NULL)
 		if_detach(ifp);
-
-	usbd_add_drv_event(USB_EVENT_DRIVER_DETACH, sc->sc_udev,
-	    &sc->sc_dev);
 
 	return 0;
 }
@@ -702,12 +696,10 @@ ueagle_intr(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 		if (status == USBD_NOT_STARTED || status == USBD_CANCELLED)
 			return;
 
-		printf("%s: abnormal interrupt status: %s\n",
-		    sc->sc_dev.dv_xname, usbd_errstr(status));
+		DPRINTF(("%s: abnormal interrupt status: %s\n",
+		    sc->sc_dev.dv_xname, usbd_errstr(status)));
 
-		if (status == USBD_STALLED)
-			usbd_clear_endpoint_stall_async(sc->pipeh_intr);
-
+		usbd_clear_endpoint_stall_async(sc->pipeh_intr);
 		return;
 	}
 

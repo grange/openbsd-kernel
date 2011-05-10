@@ -1,4 +1,4 @@
-/*	$OpenBSD: kern_sig.c,v 1.116 2010/07/26 01:56:27 guenther Exp $	*/
+/*	$OpenBSD: kern_sig.c,v 1.121 2011/04/18 21:44:56 guenther Exp $	*/
 /*	$NetBSD: kern_sig.c,v 1.54 1996/04/22 01:38:32 christos Exp $	*/
 
 /*
@@ -103,7 +103,7 @@ cansignal(struct proc *p, struct pcred *pc, struct proc *q, int signum)
 	 * Using kill(), only certain signals can be sent to setugid
 	 * child processes
 	 */
-	if (q->p_flag & P_SUGID) {
+	if (q->p_p->ps_flags & PS_SUGID) {
 		switch (signum) {
 		case 0:
 		case SIGKILL:
@@ -858,8 +858,8 @@ ptsignal(struct proc *p, int signum, enum signal_type type)
 		else {
 			action = SIG_DFL;
 
-			if (prop & SA_KILL && p->p_nice > NZERO)
-				p->p_nice = NZERO;
+			if (prop & SA_KILL &&  p->p_p->ps_nice > NZERO)
+				 p->p_p->ps_nice = NZERO;
 
 			/*
 			 * If sending a tty stop signal to a member of an
@@ -938,7 +938,7 @@ ptsignal(struct proc *p, int signum, enum signal_type type)
 			 * If a child holding parent blocked,
 			 * stopping could cause deadlock.
 			 */
-			if (p->p_flag & P_PPWAIT)
+			if (p->p_p->ps_flags & PS_PPWAIT)
 				goto out;
 			atomic_clearbits_int(&p->p_siglist, mask);
 			p->p_xstat = signum;
@@ -1056,7 +1056,7 @@ issignal(struct proc *p)
 
 	for (;;) {
 		mask = p->p_siglist & ~p->p_sigmask;
-		if (p->p_flag & P_PPWAIT)
+		if (p->p_p->ps_flags & PS_PPWAIT)
 			mask &= ~stopsigmask;
 		if (mask == 0)	 	/* no signal to send */
 			return (0);
@@ -1071,7 +1071,8 @@ issignal(struct proc *p)
 		if (mask & p->p_sigignore && (p->p_flag & P_TRACED) == 0)
 			continue;
 
-		if (p->p_flag & P_TRACED && (p->p_flag & P_PPWAIT) == 0) {
+		if (p->p_flag & P_TRACED &&
+		    (p->p_p->ps_flags & PS_PPWAIT) == 0) {
 			/*
 			 * If traced, always stop, and stay
 			 * stopped until released by the debugger.
@@ -1395,8 +1396,8 @@ coredump(struct proc *p)
 	 * group privileges, unless the nosuidcoredump sysctl is set to 2,
 	 * in which case dumps are put into /var/crash/.
 	 */
-	if (((p->p_flag & P_SUGID) && (error = suser(p, 0))) ||
-	   ((p->p_flag & P_SUGID) && nosuidcoredump)) {
+	if (((p->p_p->ps_flags & PS_SUGID) && (error = suser(p, 0))) ||
+	   ((p->p_p->ps_flags & PS_SUGID) && nosuidcoredump)) {
 		if (nosuidcoredump == 2)
 			dir = "/var/crash/";
 		else

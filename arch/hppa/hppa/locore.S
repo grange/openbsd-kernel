@@ -1,4 +1,4 @@
-/*	$OpenBSD: locore.S,v 1.184 2010/12/30 15:10:54 kettenis Exp $	*/
+/*	$OpenBSD: locore.S,v 1.186 2011/05/05 20:50:43 kettenis Exp $	*/
 
 /*
  * Copyright (c) 1998-2004 Michael Shalayeff
@@ -95,6 +95,7 @@
 	.import cpu_info, data
 	.import	proc0, data
 	.import	proc0paddr, data
+	.import proc0fpstate, data
 	.import	panic, code
 
 #define	EMRG_STACKSIZE	(1*NBPG)
@@ -175,7 +176,6 @@ $start_zero_tf
 	 * arg0 will be available space for hppa_init()
 	 */
 	ldo	NBPG+TRAPFRAME_SIZEOF(arg3), sp
-	mtctl	arg3, cr30
 	stw	r0, U_PCB+PCB_ONFAULT(arg3)
 	stw	r0, U_PCB+PCB_SPACE(arg3)	/* XXX HPPA_SID_KERNEL == 0 */
 	ldil	L%(USPACE+NBPG), arg0		/* normal U plus red zone */
@@ -189,7 +189,10 @@ $start_zero_tf
 
 	ldil	L%TFF_LAST, t1
 	stw	t1, TF_FLAGS-TRAPFRAME_SIZEOF(sp)
-	stw	arg3, TF_CR30-TRAPFRAME_SIZEOF(sp)
+	ldil	L%proc0fpstate, t1
+	ldo	R%proc0fpstate(t1), t1
+	stw	t1, TF_CR30-TRAPFRAME_SIZEOF(sp)
+	mtctl	t1, cr30
 
 	/*
 	 * disable all coprocessors
@@ -1246,7 +1249,7 @@ LEAF_ENTRY($itlb_s)
 ALTENTRY($itlb_t)
 	TLB_STATS_PRE(itlb)
 	TLB_PULL(0, TLABEL(all))
-	extru,=	r25, 5, 1, r0	/* gate needs a kernel pid */
+	extru,=	r25, 5, 1, r0	/* gateway page needs to be public */
 	depi	0, 30, 15, r25
 	mfsp	sr1, r16
 	mtsp	r8, sr1
@@ -1374,7 +1377,7 @@ EXIT($tlbd_l)
 LEAF_ENTRY($itlb_l)
 	TLB_STATS_PRE(itlb)
 	TLB_PULL_L(0, TLABEL(all))
-	extru,=	r25, 5, 1, r0	/* gate needs a kernel pid */
+	extru,=	r25, 5, 1, r0	/* gateway page needs to be public */
 	depi	0, 30, 15, r25
 	IITLBAF(17)
 	IITLBPF(25)
@@ -1497,7 +1500,7 @@ EXIT($tlbd_u)
 LEAF_ENTRY($itlb_u)
 	TLB_STATS_PRE(itlb)
 	TLB_PULL_L(0, TLABEL(all))
-	extru,=	r25, 5, 1, r0	/* gate needs a kernel pid */
+	extru,=	r25, 5, 1, r0	/* gateway page needs to be public */
 	depi	0, 30, 15, r25
 	TLB_PCX2PCXU
 	iitlbt	r17, r25

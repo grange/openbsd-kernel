@@ -1,4 +1,4 @@
-/* $OpenBSD: if_bce.c,v 1.31 2010/08/27 17:08:00 jsg Exp $ */
+/* $OpenBSD: if_bce.c,v 1.35 2011/04/03 15:36:02 jasper Exp $ */
 /* $NetBSD: if_bce.c,v 1.3 2003/09/29 01:53:02 mrg Exp $	 */
 
 /*
@@ -73,10 +73,7 @@
 
 #include <dev/pci/if_bcereg.h>
 
-#include <uvm/uvm_extern.h>
-
-/* transmit buffer max frags allowed */
-#define BCE_NTXFRAGS	16
+#include <uvm/uvm.h>
 
 /* ring descriptor */
 struct bce_dma_slot {
@@ -88,6 +85,8 @@ struct bce_dma_slot {
 #define CTRL_IOC	0x20000000	/* interrupt on completion */
 #define CTRL_EOF	0x40000000	/* end of frame */
 #define CTRL_SOF	0x80000000	/* start of frame */
+
+#define BCE_RXBUF_LEN	(MCLBYTES - 4)
 
 /* Packet status is returned in a pre-packet header */
 struct rx_pph {
@@ -105,20 +104,8 @@ struct rx_pph {
 #define RXF_OV				0x1	/* fifo overflow */
 
 /* number of descriptors used in a ring */
-#define BCE_NRXDESC		128
-#define BCE_NTXDESC		128
-
-/*
- * Mbuf pointers. We need these to keep track of the virtual addresses
- * of our mbuf chains since we can only convert from physical to virtual,
- * not the other way around.
- */
-struct bce_chain_data {
-	struct mbuf    *bce_tx_chain[BCE_NTXDESC];
-	struct mbuf    *bce_rx_chain[BCE_NRXDESC];
-	bus_dmamap_t    bce_tx_map[BCE_NTXDESC];
-	bus_dmamap_t    bce_rx_map[BCE_NRXDESC];
-};
+#define BCE_NRXDESC		64
+#define BCE_NTXDESC		64
 
 #define BCE_TIMEOUT		100	/* # 10us for mii read/write */
 
@@ -134,8 +121,10 @@ struct bce_softc {
 	u_int32_t		bce_phy;	/* eeprom indicated phy */
 	struct bce_dma_slot	*bce_rx_ring;	/* receive ring */
 	struct bce_dma_slot	*bce_tx_ring;	/* transmit ring */
-	struct bce_chain_data	bce_cdata;	/* mbufs */
+	caddr_t			bce_data;
 	bus_dmamap_t		bce_ring_map;
+	bus_dmamap_t		bce_rxdata_map;
+	bus_dmamap_t		bce_txdata_map;
 	u_int32_t		bce_intmask;	/* current intr mask */
 	u_int32_t		bce_rxin;	/* last rx descriptor seen */
 	u_int32_t		bce_txin;	/* last tx descriptor seen */
@@ -143,26 +132,6 @@ struct bce_softc {
 	int			bce_txsnext;	/* next available tx slot */
 	struct timeout		bce_timeout;
 };
-
-/* for ring descriptors */
-#define BCE_RXBUF_LEN	(MCLBYTES - 4)
-#define BCE_INIT_RXDESC(sc, x)						\
-do {									\
-	struct bce_dma_slot *__bced = &sc->bce_rx_ring[x];		\
-									\
-	*mtod(sc->bce_cdata.bce_rx_chain[x], u_int32_t *) = 0;		\
-	__bced->addr =							\
-	    htole32(sc->bce_cdata.bce_rx_map[x]->dm_segs[0].ds_addr	\
-	    + 0x40000000);						\
-	if (x != (BCE_NRXDESC - 1))					\
-		__bced->ctrl = htole32(BCE_RXBUF_LEN);			\
-	else								\
-		__bced->ctrl = htole32(BCE_RXBUF_LEN | CTRL_EOT);	\
-	bus_dmamap_sync(sc->bce_dmatag, sc->bce_ring_map,		\
-	    sizeof(struct bce_dma_slot) * x,				\
-	    sizeof(struct bce_dma_slot),				\
-	    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);			\
-} while (/* CONSTCOND */ 0)
 
 int	bce_probe(struct device *, void *, void *);
 void	bce_attach(struct device *, struct device *, void *);
@@ -175,9 +144,8 @@ void	bce_rxintr(struct bce_softc *);
 void	bce_txintr(struct bce_softc *);
 int	bce_init(struct ifnet *);
 void	bce_add_mac(struct bce_softc *, u_int8_t *, unsigned long);
-int	bce_add_rxbuf(struct bce_softc *, int);
-void	bce_rxdrain(struct bce_softc *);
-void	bce_stop(struct ifnet *, int);
+void	bce_add_rxbuf(struct bce_softc *, int);
+void	bce_stop(struct ifnet *);
 void	bce_reset(struct bce_softc *);
 void	bce_set_filter(struct ifnet *);
 int	bce_mii_read(struct device *, int, int);
@@ -196,7 +164,7 @@ void	bce_tick(void *);
 	if (bcedebug >= (n))		\
 		printf x;		\
 } while (/* CONSTCOND */ 0)
-int             bcedebug = 0;
+int	bcedebug = 0;
 #else
 #define DPRINTF(x)
 #define DPRINTFN(n,x)
@@ -219,7 +187,7 @@ int
 bce_probe(struct device *parent, void *match, void *aux)
 {
 	return (pci_matchbyid((struct pci_attach_args *)aux, bce_devices,
-	    sizeof(bce_devices)/sizeof(bce_devices[0])));
+	    nitems(bce_devices)));
 }
 
 void
@@ -229,18 +197,17 @@ bce_attach(struct device *parent, struct device *self, void *aux)
 	struct pci_attach_args *pa = aux;
 	pci_chipset_tag_t pc = pa->pa_pc;
 	pci_intr_handle_t ih;
-	const char     *intrstr = NULL;
-	caddr_t         kva;
+	const char *intrstr = NULL;
+	caddr_t kva;
 	bus_dma_segment_t seg;
-	int             rseg;
-	struct ifnet   *ifp;
-	pcireg_t        memtype;
-	bus_addr_t      memaddr;
-	bus_size_t      memsize;
-	int             pmreg;
-	pcireg_t        pmode;
-	int             error;
-	int             i;
+	int rseg;
+	struct ifnet *ifp;
+	pcireg_t memtype;
+	bus_addr_t memaddr;
+	bus_size_t memsize;
+	int pmreg;
+	pcireg_t pmode;
+	int error;
 
 	sc->bce_pa = *pa;
 	sc->bce_dmatag = pa->pa_dmat;
@@ -268,7 +235,7 @@ bce_attach(struct device *parent, struct device *self, void *aux)
 		}
 		if (pmode != 0) {
 			printf(": waking up from power state D%d\n",
-			       pmode);
+			    pmode);
 			pci_conf_write(pc, pa->pa_tag, pmreg + 4, 0);
 		}
 	}
@@ -292,6 +259,58 @@ bce_attach(struct device *parent, struct device *self, void *aux)
 	/* reset the chip */
 	bce_reset(sc);
 
+	/* Create the data DMA region and maps. */
+	if ((sc->bce_data = (caddr_t)uvm_km_kmemalloc_pla(kernel_map,
+	    uvm.kernel_object, (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES, 0,
+	    UVM_KMF_NOWAIT, 0, (paddr_t)(0x40000000 - 1), 0, 0, 1)) == NULL) {
+		printf(": unable to alloc space for ring");
+		return;
+	}
+
+	/* create a dma map for the RX ring */
+	if ((error = bus_dmamap_create(sc->bce_dmatag, BCE_NRXDESC * MCLBYTES,
+	    1, BCE_NRXDESC * MCLBYTES, 0, BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW,
+	    &sc->bce_rxdata_map))) {
+		printf(": unable to create ring DMA map, error = %d\n", error);
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		return;
+	}
+
+	/* connect the ring space to the dma map */
+	if (bus_dmamap_load(sc->bce_dmatag, sc->bce_rxdata_map, sc->bce_data,
+	    BCE_NRXDESC * MCLBYTES, NULL, BUS_DMA_READ | BUS_DMA_NOWAIT)) {
+		printf(": unable to load rx ring DMA map\n");
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		return;
+	}
+
+	/* create a dma map for the TX ring */
+	if ((error = bus_dmamap_create(sc->bce_dmatag, BCE_NTXDESC * MCLBYTES,
+	    1, BCE_NTXDESC * MCLBYTES, 0, BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW,
+	    &sc->bce_txdata_map))) {
+		printf(": unable to create ring DMA map, error = %d\n", error);
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		return;
+	}
+
+	/* connect the ring space to the dma map */
+	if (bus_dmamap_load(sc->bce_dmatag, sc->bce_txdata_map,
+	    sc->bce_data + BCE_NRXDESC * MCLBYTES,
+	    BCE_NTXDESC * MCLBYTES, NULL, BUS_DMA_WRITE | BUS_DMA_NOWAIT)) {
+		printf(": unable to load tx ring DMA map\n");
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_txdata_map);
+		return;
+	}
+
+
 	/*
 	 * Allocate DMA-safe memory for ring descriptors.
 	 * The receive, and transmit rings can not share the same
@@ -301,30 +320,37 @@ bce_attach(struct device *parent, struct device *self, void *aux)
 	 * XXX PAGE_SIZE is wasteful; we only need 1KB + 1KB, but
 	 * due to the limition above. ??
 	 */
-	if ((error = bus_dmamem_alloc(sc->bce_dmatag,
-	    2 * PAGE_SIZE, PAGE_SIZE, 2 * PAGE_SIZE,
-				      &seg, 1, &rseg, BUS_DMA_NOWAIT))) {
+	if ((error = bus_dmamem_alloc(sc->bce_dmatag, 2 * PAGE_SIZE,
+	    PAGE_SIZE, 2 * PAGE_SIZE, &seg, 1, &rseg, BUS_DMA_NOWAIT))) {
 		printf(": unable to alloc space for ring descriptors, "
-		       "error = %d\n", error);
+		    "error = %d\n", error);
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_txdata_map);
 		return;
 	}
 
 	/* map ring space to kernel */
 	if ((error = bus_dmamem_map(sc->bce_dmatag, &seg, rseg,
 	    2 * PAGE_SIZE, &kva, BUS_DMA_NOWAIT))) {
-		printf(": unable to map DMA buffers, error = %d\n",
-		    error);
+		printf(": unable to map DMA buffers, error = %d\n", error);
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_txdata_map);
 		bus_dmamem_free(sc->bce_dmatag, &seg, rseg);
 		return;
 	}
 
 	/* create a dma map for the ring */
-	if ((error = bus_dmamap_create(sc->bce_dmatag,
-	    2 * PAGE_SIZE, 1, 2 * PAGE_SIZE, 0, BUS_DMA_NOWAIT,
-				       &sc->bce_ring_map))) {
-		printf(": unable to create ring DMA map, error = %d\n",
-		    error);
-		bus_dmamem_unmap(sc->bce_dmatag, kva, 2 * PAGE_SIZE);
+	if ((error = bus_dmamap_create(sc->bce_dmatag, 2 * PAGE_SIZE, 1,
+	    2 * PAGE_SIZE, 0, BUS_DMA_NOWAIT, &sc->bce_ring_map))) {
+		printf(": unable to create ring DMA map, error = %d\n", error);
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_txdata_map);
 		bus_dmamem_free(sc->bce_dmatag, &seg, rseg);
 		return;
 	}
@@ -333,35 +359,18 @@ bce_attach(struct device *parent, struct device *self, void *aux)
 	if (bus_dmamap_load(sc->bce_dmatag, sc->bce_ring_map, kva,
 	    2 * PAGE_SIZE, NULL, BUS_DMA_NOWAIT)) {
 		printf(": unable to load ring DMA map\n");
+		uvm_km_free(kernel_map, (vaddr_t)sc->bce_data,
+		    (BCE_NTXDESC + BCE_NRXDESC) * MCLBYTES);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_rxdata_map);
+		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_txdata_map);
 		bus_dmamap_destroy(sc->bce_dmatag, sc->bce_ring_map);
-		bus_dmamem_unmap(sc->bce_dmatag, kva, 2 * PAGE_SIZE);
 		bus_dmamem_free(sc->bce_dmatag, &seg, rseg);
 		return;
 	}
 
 	/* save the ring space in softc */
-	sc->bce_rx_ring = (struct bce_dma_slot *) kva;
-	sc->bce_tx_ring = (struct bce_dma_slot *) (kva + PAGE_SIZE);
-
-	/* Create the transmit buffer DMA maps. */
-	for (i = 0; i < BCE_NTXDESC; i++) {
-		if ((error = bus_dmamap_create(sc->bce_dmatag, MCLBYTES,
-		    BCE_NTXFRAGS, MCLBYTES, 0, 0, &sc->bce_cdata.bce_tx_map[i])) != 0) {
-			printf(": unable to create tx DMA map, error = %d\n",
-			    error);
-		}
-		sc->bce_cdata.bce_tx_chain[i] = NULL;
-	}
-
-	/* Create the receive buffer DMA maps. */
-	for (i = 0; i < BCE_NRXDESC; i++) {
-		if ((error = bus_dmamap_create(sc->bce_dmatag, MCLBYTES, 1,
-		    MCLBYTES, 0, 0, &sc->bce_cdata.bce_rx_map[i])) != 0) {
-			printf(": unable to create rx DMA map, error = %d\n",
-			    error);
-		}
-		sc->bce_cdata.bce_rx_chain[i] = NULL;
-	}
+	sc->bce_rx_ring = (struct bce_dma_slot *)kva;
+	sc->bce_tx_ring = (struct bce_dma_slot *)(kva + PAGE_SIZE);
 
 	/* Set up ifnet structure */
 	ifp = &sc->bce_ac.ac_if;
@@ -438,7 +447,7 @@ bce_activate(struct device *self, int act)
 	switch (act) {
 	case DVACT_SUSPEND:
 		if (ifp->if_flags & IFF_RUNNING)
-			bce_stop(ifp, 1);
+			bce_stop(ifp);
 		break;
 	case DVACT_RESUME:
 		if (ifp->if_flags & IFF_UP) {
@@ -457,8 +466,8 @@ bce_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 {
 	struct bce_softc *sc = ifp->if_softc;
 	struct ifaddr *ifa = (struct ifaddr *) data;
-	struct ifreq   *ifr = (struct ifreq *) data;
-	int             s, error = 0;
+	struct ifreq *ifr = (struct ifreq *) data;
+	int s, error = 0;
 
 	s = splnet();
 
@@ -480,14 +489,13 @@ bce_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		break;
 
 	case SIOCSIFFLAGS:
-		if(ifp->if_flags & IFF_UP)
-			if(ifp->if_flags & IFF_RUNNING)
+		if (ifp->if_flags & IFF_UP)
+			if (ifp->if_flags & IFF_RUNNING)
 				bce_set_filter(ifp);
 			else
 				bce_init(ifp);
-		else if(ifp->if_flags & IFF_RUNNING)
-			bce_stop(ifp, 0);
-
+		else if (ifp->if_flags & IFF_RUNNING)
+			bce_stop(ifp);
 		break;
 
 	case SIOCSIFMEDIA:
@@ -519,17 +527,16 @@ void
 bce_start(struct ifnet *ifp)
 {
 	struct bce_softc *sc = ifp->if_softc;
-	struct mbuf    *m0;
-	bus_dmamap_t    dmamap;
-	int             txstart;
-	int             txsfree;
-	int             newpkts = 0;
-	int             error;
+	struct mbuf *m0;
+	u_int32_t ctrl;
+	int txstart;
+	int txsfree;
+	int newpkts = 0;
 
 	/*
-         * do not start another if currently transmitting, and more
-         * descriptors(tx slots) are needed for next packet.
-         */
+	 * do not start another if currently transmitting, and more
+	 * descriptors(tx slots) are needed for next packet.
+	 */
 	if ((ifp->if_flags & (IFF_RUNNING | IFF_OACTIVE)) != IFF_RUNNING)
 		return;
 
@@ -540,100 +547,66 @@ bce_start(struct ifnet *ifp)
 		txsfree = sc->bce_txin - sc->bce_txsnext - 1;
 
 	/*
-         * Loop through the send queue, setting up transmit descriptors
-         * until we drain the queue, or use up all available transmit
-         * descriptors.
-         */
+	 * Loop through the send queue, setting up transmit descriptors
+	 * until we drain the queue, or use up all available transmit
+	 * descriptors.
+	 */
 	while (txsfree > 0) {
-		int             seg;
 
 		/* Grab a packet off the queue. */
 		IFQ_POLL(&ifp->if_snd, m0);
 		if (m0 == NULL)
 			break;
 
-		/* get the transmit slot dma map */
-		dmamap = sc->bce_cdata.bce_tx_map[sc->bce_txsnext];
-
 		/*
-		 * Load the DMA map.  If this fails, the packet either
-		 * didn't fit in the alloted number of segments, or we
-		 * were short on resources. If the packet will not fit,
-		 * it will be dropped. If short on resources, it will
-		 * be tried again later.
+		 * copy mbuf chain into DMA memory buffer.
 		 */
-		error = bus_dmamap_load_mbuf(sc->bce_dmatag, dmamap, m0,
-		    BUS_DMA_WRITE | BUS_DMA_NOWAIT);
-		if (error == EFBIG) {
-			printf("%s: Tx packet consumes too many DMA segments, "
-			    "dropping...\n", sc->bce_dev.dv_xname);
-			IFQ_DEQUEUE(&ifp->if_snd, m0);
-			m_freem(m0);
-			ifp->if_oerrors++;
-			continue;
-		} else if (error) {
-			/* short on resources, come back later */
-			printf("%s: unable to load Tx buffer, error = %d\n",
-			    sc->bce_dev.dv_xname, error);
-			break;
-		}
-		/* If not enough descriptors available, try again later */
-		if (dmamap->dm_nsegs > txsfree) {
-			ifp->if_flags |= IFF_OACTIVE;
-			bus_dmamap_unload(sc->bce_dmatag, dmamap);
-			break;
-		}
+		m_copydata(m0, 0, m0->m_pkthdr.len, sc->bce_data +
+		    (sc->bce_txsnext + BCE_NRXDESC) * MCLBYTES);
+		ctrl = m0->m_pkthdr.len & CTRL_BC_MASK;
+		ctrl |= CTRL_SOF | CTRL_EOF | CTRL_IOC;
+
 		/* WE ARE NOW COMMITTED TO TRANSMITTING THE PACKET. */
-
-		/* So take it off the queue */
 		IFQ_DEQUEUE(&ifp->if_snd, m0);
-
-		/* save the pointer so it can be freed later */
-		sc->bce_cdata.bce_tx_chain[sc->bce_txsnext] = m0;
-
-		/* Sync the data DMA map. */
-		bus_dmamap_sync(sc->bce_dmatag, dmamap, 0, dmamap->dm_mapsize,
-				BUS_DMASYNC_PREWRITE);
-
-		/* Initialize the transmit descriptor(s). */
-		txstart = sc->bce_txsnext;
-		for (seg = 0; seg < dmamap->dm_nsegs; seg++) {
-			u_int32_t ctrl;
-
-			ctrl = dmamap->dm_segs[seg].ds_len & CTRL_BC_MASK;
-			if (seg == 0)
-				ctrl |= CTRL_SOF;
-			if (seg == dmamap->dm_nsegs - 1)
-				ctrl |= CTRL_EOF;
-			if (sc->bce_txsnext == BCE_NTXDESC - 1)
-				ctrl |= CTRL_EOT;
-			ctrl |= CTRL_IOC;
-			sc->bce_tx_ring[sc->bce_txsnext].ctrl = htole32(ctrl);
-			sc->bce_tx_ring[sc->bce_txsnext].addr =
-			    htole32(dmamap->dm_segs[seg].ds_addr + 0x40000000);	/* MAGIC */
-			if (sc->bce_txsnext + 1 > BCE_NTXDESC - 1)
-				sc->bce_txsnext = 0;
-			else
-				sc->bce_txsnext++;
-			txsfree--;
-		}
-		/* sync descriptors being used */
-		bus_dmamap_sync(sc->bce_dmatag, sc->bce_ring_map,
-			  sizeof(struct bce_dma_slot) * txstart + PAGE_SIZE,
-			     sizeof(struct bce_dma_slot) * dmamap->dm_nsegs,
-				BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
-
-		/* Give the packet to the chip. */
-		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_DPTR,
-			     sc->bce_txsnext * sizeof(struct bce_dma_slot));
-
-		newpkts++;
 
 #if NBPFILTER > 0
 		/* Pass the packet to any BPF listeners. */
 		if (ifp->if_bpf)
 			bpf_mtap(ifp->if_bpf, m0, BPF_DIRECTION_OUT);
-#endif				/* NBPFILTER > 0 */
+#endif
+		/* mbuf no longer needed */
+		m_freem(m0);
+
+		/* Sync the data DMA map. */
+		bus_dmamap_sync(sc->bce_dmatag, sc->bce_txdata_map,
+		    sc->bce_txsnext * MCLBYTES, MCLBYTES, BUS_DMASYNC_PREWRITE);
+
+		/* Initialize the transmit descriptor(s). */
+		txstart = sc->bce_txsnext;
+
+		if (sc->bce_txsnext == BCE_NTXDESC - 1)
+			ctrl |= CTRL_EOT;
+		sc->bce_tx_ring[sc->bce_txsnext].ctrl = htole32(ctrl);
+		sc->bce_tx_ring[sc->bce_txsnext].addr =
+		    htole32(sc->bce_txdata_map->dm_segs[0].ds_addr +
+		    sc->bce_txsnext * MCLBYTES + 0x40000000);	/* MAGIC */
+		if (sc->bce_txsnext + 1 > BCE_NTXDESC - 1)
+			sc->bce_txsnext = 0;
+		else
+			sc->bce_txsnext++;
+		txsfree--;
+
+		/* sync descriptors being used */
+		bus_dmamap_sync(sc->bce_dmatag, sc->bce_ring_map,
+		    sizeof(struct bce_dma_slot) * txstart + PAGE_SIZE,
+		    sizeof(struct bce_dma_slot),
+		    BUS_DMASYNC_PREREAD | BUS_DMASYNC_PREWRITE);
+
+		/* Give the packet to the chip. */
+		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_DPTR,
+		    sc->bce_txsnext * sizeof(struct bce_dma_slot));
+
+		newpkts++;
 	}
 	if (txsfree == 0) {
 		/* No more slots left; notify upper layer. */
@@ -664,10 +637,10 @@ int
 bce_intr(void *xsc)
 {
 	struct bce_softc *sc;
-	struct ifnet   *ifp;
+	struct ifnet *ifp;
 	u_int32_t intstatus;
-	int             wantinit;
-	int             handled = 0;
+	int wantinit;
+	int handled = 0;
 
 	sc = xsc;
 	ifp = &sc->bce_ac.ac_if;
@@ -706,10 +679,10 @@ bce_intr(void *xsc)
 			}
 			if (intstatus & I_RU)
 				printf("%s: receive descriptor underflow\n",
-				       sc->bce_dev.dv_xname);
+				    sc->bce_dev.dv_xname);
 			if (intstatus & I_DE)
 				printf("%s: descriptor protocol error\n",
-				       sc->bce_dev.dv_xname);
+				    sc->bce_dev.dv_xname);
 			if (intstatus & I_PD)
 				printf("%s: data error\n",
 				    sc->bce_dev.dv_xname);
@@ -736,12 +709,12 @@ bce_intr(void *xsc)
 void
 bce_rxintr(struct bce_softc *sc)
 {
-	struct ifnet   *ifp = &sc->bce_ac.ac_if;
-	struct rx_pph  *pph;
-	struct mbuf    *m;
-	int             curr;
-	int             len;
-	int             i;
+	struct ifnet *ifp = &sc->bce_ac.ac_if;
+	struct rx_pph *pph;
+	struct mbuf *m;
+	int curr;
+	int len;
+	int i;
 
 	/* get pointer to active receive slot */
 	curr = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_RXSTATUS)
@@ -751,18 +724,16 @@ bce_rxintr(struct bce_softc *sc)
 		curr = BCE_NRXDESC - 1;
 
 	/* process packets up to but not current packet being worked on */
-	for (i = sc->bce_rxin; i != curr;
-	    i + 1 > BCE_NRXDESC - 1 ? i = 0 : i++) {
+	for (i = sc->bce_rxin; i != curr; i = (i + 1) % BCE_NRXDESC) {
 		/* complete any post dma memory ops on packet */
-		bus_dmamap_sync(sc->bce_dmatag, sc->bce_cdata.bce_rx_map[i], 0,
-		    sc->bce_cdata.bce_rx_map[i]->dm_mapsize,
-		    BUS_DMASYNC_POSTREAD);
+		bus_dmamap_sync(sc->bce_dmatag, sc->bce_rxdata_map,
+		    i * MCLBYTES, MCLBYTES, BUS_DMASYNC_POSTREAD);
 
 		/*
 		 * If the packet had an error, simply recycle the buffer,
 		 * resetting the len, and flags.
 		 */
-		pph = mtod(sc->bce_cdata.bce_rx_chain[i], struct rx_pph *);
+		pph = (struct rx_pph *)(sc->bce_data + i * MCLBYTES);
 		if (pph->flags & (RXF_NO | RXF_RXER | RXF_CRC | RXF_OV)) {
 			ifp->if_ierrors++;
 			pph->len = 0;
@@ -775,9 +746,6 @@ bce_rxintr(struct bce_softc *sc)
 			continue;	/* no packet if empty */
 		pph->len = 0;
 		pph->flags = 0;
-		/* bump past pre header to packet */
-		sc->bce_cdata.bce_rx_chain[i]->m_data +=
-			BCE_PREPKT_HEADER_SIZE;
 
  		/*
 		 * The chip includes the CRC with every packet.  Trim
@@ -785,44 +753,8 @@ bce_rxintr(struct bce_softc *sc)
 		 */
 		len -= ETHER_CRC_LEN;
 
-		/*
-		 * If the packet is small enough to fit in a
-		 * single header mbuf, allocate one and copy
-		 * the data into it.  This greatly reduces
-		 * memory consumption when receiving lots
-		 * of small packets.
-		 *
-		 * Otherwise, add a new buffer to the receive
-		 * chain.  If this fails, drop the packet and
-		 * recycle the old buffer.
-		 */
-		if (len <= (MHLEN - 2)) {
-			MGETHDR(m, M_DONTWAIT, MT_DATA);
-			if (m == NULL)
-				goto dropit;
-			m->m_data += 2;
-			memcpy(mtod(m, caddr_t),
-			 mtod(sc->bce_cdata.bce_rx_chain[i], caddr_t), len);
-			sc->bce_cdata.bce_rx_chain[i]->m_data -=
-				BCE_PREPKT_HEADER_SIZE;
-		} else {
-			m = sc->bce_cdata.bce_rx_chain[i];
-			if (bce_add_rxbuf(sc, i) != 0) {
-		dropit:
-				ifp->if_ierrors++;
-				/* continue to use old buffer */
-				sc->bce_cdata.bce_rx_chain[i]->m_data -=
-					BCE_PREPKT_HEADER_SIZE;
-				bus_dmamap_sync(sc->bce_dmatag,
-				    sc->bce_cdata.bce_rx_map[i], 0,
-				    sc->bce_cdata.bce_rx_map[i]->dm_mapsize,
-				    BUS_DMASYNC_PREREAD);
-				continue;
-			}
-		}
-
-		m->m_pkthdr.rcvif = ifp;
-		m->m_pkthdr.len = m->m_len = len;
+		m = m_devget(sc->bce_data + i * MCLBYTES +
+		    BCE_PREPKT_HEADER_SIZE, len, ETHER_ALIGN, ifp, NULL);
 		ifp->if_ipackets++;
 
 #if NBPFILTER > 0
@@ -832,7 +764,7 @@ bce_rxintr(struct bce_softc *sc)
 		 */
 		if (ifp->if_bpf)
 			bpf_mtap(ifp->if_bpf, m, BPF_DIRECTION_IN);
-#endif				/* NBPFILTER > 0 */
+#endif
 
 		/* Pass it on. */
 		ether_input_mbuf(ifp, m);
@@ -852,31 +784,24 @@ void
 bce_txintr(struct bce_softc *sc)
 {
 	struct ifnet   *ifp = &sc->bce_ac.ac_if;
-	int             curr;
-	int             i;
+	int curr;
+	int i;
 
 	ifp->if_flags &= ~IFF_OACTIVE;
 
 	/*
-         * Go through the Tx list and free mbufs for those
-         * frames which have been transmitted.
-         */
-	curr = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_TXSTATUS) &
-		RS_CD_MASK;
+	 * Go through the Tx list and free mbufs for those
+	 * frames which have been transmitted.
+	 */
+	curr = bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
+	    BCE_DMA_TXSTATUS) & RS_CD_MASK;
 	curr = curr / sizeof(struct bce_dma_slot);
 	if (curr >= BCE_NTXDESC)
 		curr = BCE_NTXDESC - 1;
-	for (i = sc->bce_txin; i != curr;
-	    i + 1 > BCE_NTXDESC - 1 ? i = 0 : i++) {
+	for (i = sc->bce_txin; i != curr; i = (i + 1) % BCE_NTXDESC) {
 		/* do any post dma memory ops on transmit data */
-		if (sc->bce_cdata.bce_tx_chain[i] == NULL)
-			continue;
-		bus_dmamap_sync(sc->bce_dmatag, sc->bce_cdata.bce_tx_map[i], 0,
-		    sc->bce_cdata.bce_tx_map[i]->dm_mapsize,
-		    BUS_DMASYNC_POSTWRITE);
-		bus_dmamap_unload(sc->bce_dmatag, sc->bce_cdata.bce_tx_map[i]);
-		m_freem(sc->bce_cdata.bce_tx_chain[i]);
-		sc->bce_cdata.bce_tx_chain[i] = NULL;
+		bus_dmamap_sync(sc->bce_dmatag, sc->bce_txdata_map,
+		    i * MCLBYTES, MCLBYTES, BUS_DMASYNC_POSTWRITE);
 		ifp->if_opackets++;
 	}
 	sc->bce_txin = curr;
@@ -895,11 +820,10 @@ bce_init(struct ifnet *ifp)
 {
 	struct bce_softc *sc = ifp->if_softc;
 	u_int32_t reg_win;
-	int             error;
-	int             i;
+	int i;
 
 	/* Cancel any pending I/O. */
-	bce_stop(ifp, 0);
+	bce_stop(ifp);
 
 	/* enable pci inerrupts, bursts, and prefetch */
 
@@ -966,9 +890,9 @@ bce_init(struct ifnet *ifp)
 	    sc->bce_ring_map->dm_segs[0].ds_addr + PAGE_SIZE + 0x40000000);	/* MAGIC */
 
 	/*
-         * Give the receive ring to the chip, and
-         * start the receive DMA engine.
-         */
+	 * Give the receive ring to the chip, and
+	 * start the receive DMA engine.
+	 */
 	sc->bce_rxin = 0;
 
 	/* clear the rx descriptor ring */
@@ -980,18 +904,8 @@ bce_init(struct ifnet *ifp)
 	    sc->bce_ring_map->dm_segs[0].ds_addr + 0x40000000);		/* MAGIC */
 
 	/* Initialize receive descriptors */
-	for (i = 0; i < BCE_NRXDESC; i++) {
-		if (sc->bce_cdata.bce_rx_chain[i] == NULL) {
-			if ((error = bce_add_rxbuf(sc, i)) != 0) {
-				printf("%s: unable to allocate or map rx(%d) "
-				    "mbuf, error = %d\n", sc->bce_dev.dv_xname,
-				    i, error);
-				bce_rxdrain(sc);
-				return (error);
-			}
-		} else
-			BCE_INIT_RXDESC(sc, i);
-	}
+	for (i = 0; i < BCE_NRXDESC; i++)
+		bce_add_rxbuf(sc, i);
 
 	/* Enable interrupts */
 	sc->bce_intmask =
@@ -1025,7 +939,7 @@ bce_init(struct ifnet *ifp)
 void
 bce_add_mac(struct bce_softc *sc, u_int8_t *mac, unsigned long idx)
 {
-	int             i;
+	int i;
 	u_int32_t rval;
 
 	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_FILT_LOW,
@@ -1049,64 +963,35 @@ bce_add_mac(struct bce_softc *sc, u_int8_t *mac, unsigned long idx)
 }
 
 /* Add a receive buffer to the indiciated descriptor. */
-int
+void
 bce_add_rxbuf(struct bce_softc *sc, int idx)
 {
-	struct mbuf    *m;
-	int             error;
+	struct bce_dma_slot *bced = &sc->bce_rx_ring[idx];
 
-	MGETHDR(m, M_DONTWAIT, MT_DATA);
-	if (m == NULL)
-		return (ENOBUFS);
+	bus_dmamap_sync(sc->bce_dmatag, sc->bce_rxdata_map, idx * MCLBYTES,
+	    MCLBYTES, BUS_DMASYNC_PREREAD);
 
-	MCLGET(m, M_DONTWAIT);
-	if ((m->m_flags & M_EXT) == 0) {
-		m_freem(m);
-		return (ENOBUFS);
-	}
-	if (sc->bce_cdata.bce_rx_chain[idx] != NULL)
-		bus_dmamap_unload(sc->bce_dmatag,
-		    sc->bce_cdata.bce_rx_map[idx]);
+	*(u_int32_t *)(sc->bce_data + idx * MCLBYTES) = 0;
+	bced->addr = htole32(sc->bce_rxdata_map->dm_segs[0].ds_addr +
+	    idx * MCLBYTES + 0x40000000);
+	if (idx != (BCE_NRXDESC - 1))
+		bced->ctrl = htole32(BCE_RXBUF_LEN);
+	else
+		bced->ctrl = htole32(BCE_RXBUF_LEN | CTRL_EOT);
 
-	sc->bce_cdata.bce_rx_chain[idx] = m;
+	bus_dmamap_sync(sc->bce_dmatag, sc->bce_ring_map,
+	    sizeof(struct bce_dma_slot) * idx,
+	    sizeof(struct bce_dma_slot),
+	    BUS_DMASYNC_PREREAD|BUS_DMASYNC_PREWRITE);
 
-	error = bus_dmamap_load(sc->bce_dmatag, sc->bce_cdata.bce_rx_map[idx],
-	    m->m_ext.ext_buf, m->m_ext.ext_size, NULL,
-	    BUS_DMA_READ | BUS_DMA_NOWAIT);
-	if (error)
-		return (error);
-
-	bus_dmamap_sync(sc->bce_dmatag, sc->bce_cdata.bce_rx_map[idx], 0,
-	    sc->bce_cdata.bce_rx_map[idx]->dm_mapsize, BUS_DMASYNC_PREREAD);
-
-	BCE_INIT_RXDESC(sc, idx);
-
-	return (0);
-
-}
-
-/* Drain the receive queue. */
-void
-bce_rxdrain(struct bce_softc *sc)
-{
-	int             i;
-
-	for (i = 0; i < BCE_NRXDESC; i++) {
-		if (sc->bce_cdata.bce_rx_chain[i] != NULL) {
-			bus_dmamap_unload(sc->bce_dmatag,
-			    sc->bce_cdata.bce_rx_map[i]);
-			m_freem(sc->bce_cdata.bce_rx_chain[i]);
-			sc->bce_cdata.bce_rx_chain[i] = NULL;
-		}
-	}
 }
 
 /* Stop transmission on the interface */
 void
-bce_stop(struct ifnet *ifp, int disable)
+bce_stop(struct ifnet *ifp)
 {
 	struct bce_softc *sc = ifp->if_softc;
-	int             i;
+	int i;
 	u_int32_t val;
 
 	/* Stop the 1 second timer */
@@ -1138,20 +1023,6 @@ bce_stop(struct ifnet *ifp, int disable)
 	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_RXCTL, 0);
 	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_TXCTL, 0);
 	delay(10);
-
-	/* Release any queued transmit buffers. */
-	for (i = 0; i < BCE_NTXDESC; i++) {
-		if (sc->bce_cdata.bce_tx_chain[i] != NULL) {
-			bus_dmamap_unload(sc->bce_dmatag,
-			    sc->bce_cdata.bce_tx_map[i]);
-			m_freem(sc->bce_cdata.bce_tx_chain[i]);
-			sc->bce_cdata.bce_tx_chain[i] = NULL;
-		}
-	}
-
-	/* drain receive queue */
-	if (disable)
-		bce_rxdrain(sc);
 }
 
 /* reset the chip */
@@ -1160,7 +1031,7 @@ bce_reset(struct bce_softc *sc)
 {
 	u_int32_t val;
 	u_int32_t sbval;
-	int             i;
+	int i;
 
 	/* if SB core is up */
 	sbval = bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
@@ -1181,11 +1052,13 @@ bce_reset(struct bce_softc *sc)
 		}
 		if (i == 200)
 			printf("%s: timed out disabling ethernet mac\n",
-			       sc->bce_dev.dv_xname);
+			    sc->bce_dev.dv_xname);
 
 		/* reset the dma engines */
-		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_TXCTL, 0);
-		val = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_RXSTATUS);
+		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DMA_TXCTL,
+		    0);
+		val = bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
+		    BCE_DMA_RXSTATUS);
 		/* if error on receive, wait to go idle */
 		if (val & RS_ERROR) {
 			for (i = 0; i < 100; i++) {
@@ -1214,7 +1087,7 @@ bce_reset(struct bce_softc *sc)
 		}
 		if (i == 200)
 			printf("%s: timed out resetting ethernet mac\n",
-			       sc->bce_dev.dv_xname);
+			    sc->bce_dev.dv_xname);
 	} else {
 		u_int32_t reg_win;
 
@@ -1230,18 +1103,16 @@ bce_reset(struct bce_softc *sc)
 		/* enable SB to PCI interrupt */
 		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_SBINTVEC,
 		    bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
-		        BCE_SBINTVEC) |
-		    SBIV_ENET0);
+		    BCE_SBINTVEC) | SBIV_ENET0);
 
 		/* enable prefetch and bursts for sonics-to-pci translation 2 */
 		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_SPCI_TR2,
 		    bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
-			BCE_SPCI_TR2) |
-		    SBTOPCI_PREF | SBTOPCI_BURST);
+		    BCE_SPCI_TR2) | SBTOPCI_PREF | SBTOPCI_BURST);
 
 		/* restore to ethernet register space */
 		pci_conf_write(sc->bce_pa.pa_pc, sc->bce_pa.pa_tag, BCE_REG_WIN,
-			       reg_win);
+		    reg_win);
 	}
 
 	/* disable SB core if not in reset */
@@ -1317,7 +1188,8 @@ bce_reset(struct bce_softc *sc)
 	val = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_DEVCTL);
 	if (!(val & BCE_DC_IP)) {
 		/* select external phy */
-		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_ENET_CTL, EC_EP);
+		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_ENET_CTL,
+		    EC_EP);
 	} else if (val & BCE_DC_ER) {	/* internal, clear reset bit if on */
 		bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_DEVCTL,
 		    val & ~BCE_DC_ER);
@@ -1379,11 +1251,12 @@ int
 bce_mii_read(struct device *self, int phy, int reg)
 {
 	struct bce_softc *sc = (struct bce_softc *) self;
-	int             i;
+	int i;
 	u_int32_t val;
 
 	/* clear mii_int */
-	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_MI_STS, BCE_MIINTR);
+	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_MI_STS,
+	    BCE_MIINTR);
 
 	/* Read the PHY register */
 	bus_space_write_4(sc->bce_btag, sc->bce_bhandle, BCE_MI_COMM,
@@ -1391,7 +1264,8 @@ bce_mii_read(struct device *self, int phy, int reg)
 	    (MII_COMMAND_ACK << 16) | BCE_MIPHY(phy) | BCE_MIREG(reg));	/* MAGIC */
 
 	for (i = 0; i < BCE_TIMEOUT; i++) {
-		val = bus_space_read_4(sc->bce_btag, sc->bce_bhandle, BCE_MI_STS);
+		val = bus_space_read_4(sc->bce_btag, sc->bce_bhandle,
+		    BCE_MI_STS);
 		if (val & BCE_MIINTR)
 			break;
 		delay(10);
@@ -1410,7 +1284,7 @@ void
 bce_mii_write(struct device *self, int phy, int reg, int val)
 {
 	struct bce_softc *sc = (struct bce_softc *) self;
-	int             i;
+	int i;
 	u_int32_t rval;
 
 	/* clear mii_int */
@@ -1455,9 +1329,9 @@ bce_statchg(struct device *self)
 		    reg & ~EXC_FD);
 
 	/*
-         * Enable activity led.
-         * XXX This should be in a phy driver, but not currently.
-         */
+	 * Enable activity led.
+	 * XXX This should be in a phy driver, but not currently.
+	 */
 	bce_mii_write((struct device *) sc, 1, 26,	/* MAGIC */
 	    bce_mii_read((struct device *) sc, 1, 26) & 0x7fff);	/* MAGIC */
 	/* enable traffic meter led mode */

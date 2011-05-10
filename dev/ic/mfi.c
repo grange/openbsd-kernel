@@ -1,4 +1,4 @@
-/* $OpenBSD: mfi.c,v 1.114 2010/12/30 08:53:50 dlg Exp $ */
+/* $OpenBSD: mfi.c,v 1.119 2011/04/09 20:23:31 marco Exp $ */
 /*
  * Copyright (c) 2006 Marco Peereboom <marco@peereboom.us>
  *
@@ -17,6 +17,7 @@
 
 #include "bio.h"
 
+#include <sys/types.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/buf.h>
@@ -27,6 +28,7 @@
 #include <sys/proc.h>
 #include <sys/rwlock.h>
 #include <sys/sensors.h>
+#include <sys/pool.h>
 
 #include <machine/bus.h>
 
@@ -171,7 +173,7 @@ void
 mfi_put_ccb(void *cookie, void *io)
 {
 	struct mfi_softc	*sc = cookie;
-	struct mfi_ccb 		*ccb = io;
+	struct mfi_ccb		*ccb = io;
 	struct mfi_frame_header	*hdr = &ccb->ccb_frame->mfr_header;
 
 	DNPRINTF(MFI_D_CCB, "%s: mfi_put_ccb: %p\n", DEVNAME(sc), ccb);
@@ -300,7 +302,7 @@ mfi_allocmem(struct mfi_softc *sc, size_t size)
 
 	if (bus_dmamap_create(sc->sc_dmat, size, 1, size, 0,
 	    BUS_DMA_NOWAIT | BUS_DMA_ALLOCNOW, &mm->am_map) != 0)
-		goto amfree; 
+		goto amfree;
 
 	if (bus_dmamem_alloc(sc->sc_dmat, size, PAGE_SIZE, 0, &mm->am_seg, 1,
 	    &nsegs, BUS_DMA_NOWAIT | BUS_DMA_ZERO) != 0)
@@ -408,6 +410,7 @@ mfi_initialize_firmware(struct mfi_softc *sc)
 	struct mfi_ccb		*ccb;
 	struct mfi_init_frame	*init;
 	struct mfi_init_qinfo	*qinfo;
+	uint64_t		handy;
 
 	DNPRINTF(MFI_D_MISC, "%s: mfi_initialize_firmware\n", DEVNAME(sc));
 
@@ -419,21 +422,33 @@ mfi_initialize_firmware(struct mfi_softc *sc)
 
 	memset(qinfo, 0, sizeof *qinfo);
 	qinfo->miq_rq_entries = sc->sc_max_cmds + 1;
-	qinfo->miq_rq_addr_lo = htole32(MFIMEM_DVA(sc->sc_pcq) +
-	    offsetof(struct mfi_prod_cons, mpc_reply_q));
-	qinfo->miq_pi_addr_lo = htole32(MFIMEM_DVA(sc->sc_pcq) +
-	    offsetof(struct mfi_prod_cons, mpc_producer));
-	qinfo->miq_ci_addr_lo = htole32(MFIMEM_DVA(sc->sc_pcq) +
-	    offsetof(struct mfi_prod_cons, mpc_consumer));
+
+	handy = MFIMEM_DVA(sc->sc_pcq) +
+	    offsetof(struct mfi_prod_cons, mpc_reply_q);
+	qinfo->miq_rq_addr_hi = htole32(handy >> 32);
+	qinfo->miq_rq_addr_lo = htole32(handy);
+
+	handy = MFIMEM_DVA(sc->sc_pcq) +
+	    offsetof(struct mfi_prod_cons, mpc_producer);
+	qinfo->miq_pi_addr_hi = htole32(handy >> 32);
+	qinfo->miq_pi_addr_lo = htole32(handy);
+
+	handy = MFIMEM_DVA(sc->sc_pcq) +
+	    offsetof(struct mfi_prod_cons, mpc_consumer);
+	qinfo->miq_ci_addr_hi = htole32(handy >> 32);
+	qinfo->miq_ci_addr_lo = htole32(handy);
 
 	init->mif_header.mfh_cmd = MFI_CMD_INIT;
 	init->mif_header.mfh_data_len = sizeof *qinfo;
 	init->mif_qinfo_new_addr_lo = htole32(ccb->ccb_pframe + MFI_FRAME_SIZE);
 
-	DNPRINTF(MFI_D_MISC, "%s: entries: %#x rq: %#x pi: %#x ci: %#x\n",
+	DNPRINTF(MFI_D_MISC, "%s: entries: %08x%08x rq: %08x%08x pi: %#x "
+	    "ci: %08x%08x\n",
 	    DEVNAME(sc),
-	    qinfo->miq_rq_entries, qinfo->miq_rq_addr_lo,
-	    qinfo->miq_pi_addr_lo, qinfo->miq_ci_addr_lo);
+	    qinfo->miq_rq_entries,
+	    qinfo->miq_rq_addr_hi, qinfo->miq_rq_addr_lo,
+	    qinfo->miq_pi_addr_hi, qinfo->miq_pi_addr_lo,
+	    qinfo->miq_ci_addr_hi, qinfo->miq_ci_addr_lo);
 
 	if (mfi_poll(ccb)) {
 		printf("%s: mfi_initialize_firmware failed\n", DEVNAME(sc));
@@ -618,7 +633,7 @@ int
 mfi_attach(struct mfi_softc *sc, enum mfi_iop iop)
 {
 	struct scsibus_attach_args saa;
-	uint32_t		status, frames;
+	uint32_t		status, frames, max_sgl;
 	int			i;
 
 	switch (iop) {
@@ -648,9 +663,18 @@ mfi_attach(struct mfi_softc *sc, enum mfi_iop iop)
 
 	status = mfi_fw_state(sc);
 	sc->sc_max_cmds = status & MFI_STATE_MAXCMD_MASK;
-	sc->sc_max_sgl = (status & MFI_STATE_MAXSGL_MASK) >> 16;
-	DNPRINTF(MFI_D_MISC, "%s: max commands: %u, max sgl: %u\n",
-	    DEVNAME(sc), sc->sc_max_cmds, sc->sc_max_sgl);
+	max_sgl = (status & MFI_STATE_MAXSGL_MASK) >> 16;
+	if (sc->sc_64bit_dma) {
+		sc->sc_max_sgl = min(max_sgl, (128 * 1024) / PAGE_SIZE + 1);
+		sc->sc_sgl_size = sizeof(struct mfi_sg64);
+		sc->sc_sgl_flags = MFI_FRAME_SGL64;
+	} else {
+		sc->sc_max_sgl = max_sgl;
+		sc->sc_sgl_size = sizeof(struct mfi_sg32);
+		sc->sc_sgl_flags = MFI_FRAME_SGL32;
+	}
+	DNPRINTF(MFI_D_MISC, "%s: 64bit: %d max commands: %u, max sgl: %u\n",
+	    DEVNAME(sc), sc->sc_64bit_dma, sc->sc_max_cmds, sc->sc_max_sgl);
 
 	/* consumer/producer and reply queue memory */
 	sc->sc_pcq = mfi_allocmem(sc, (sizeof(uint32_t) * sc->sc_max_cmds) +
@@ -663,8 +687,8 @@ mfi_attach(struct mfi_softc *sc, enum mfi_iop iop)
 
 	/* frame memory */
 	/* we are not doing 64 bit IO so only calculate # of 32 bit frames */
-	frames = (sizeof(struct mfi_sg32) * sc->sc_max_sgl +
-	    MFI_FRAME_SIZE - 1) / MFI_FRAME_SIZE + 1;
+	frames = (sc->sc_sgl_size * sc->sc_max_sgl + MFI_FRAME_SIZE - 1) /
+	    MFI_FRAME_SIZE + 1;
 	sc->sc_frames_size = frames * MFI_FRAME_SIZE;
 	sc->sc_frames = mfi_allocmem(sc, sc->sc_frames_size * sc->sc_max_cmds);
 	if (sc->sc_frames == NULL) {
@@ -847,6 +871,7 @@ mfi_scsi_io(struct mfi_ccb *ccb, struct scsi_xfer *xs, uint64_t blockno,
 {
 	struct scsi_link	*link = xs->sc_link;
 	struct mfi_io_frame	*io;
+	uint64_t		handy;
 
 	DNPRINTF(MFI_D_CMD, "%s: mfi_scsi_io: %d\n",
 	    DEVNAME((struct mfi_softc *)link->adapter_softc), link->target);
@@ -869,8 +894,10 @@ mfi_scsi_io(struct mfi_ccb *ccb, struct scsi_xfer *xs, uint64_t blockno,
 	io->mif_header.mfh_data_len= blockcnt;
 	io->mif_lba_hi = (uint32_t)(blockno >> 32);
 	io->mif_lba_lo = (uint32_t)(blockno & 0xffffffffull);
-	io->mif_sense_addr_lo = htole32(ccb->ccb_psense);
-	io->mif_sense_addr_hi = 0;
+
+	handy = ccb->ccb_psense;
+	io->mif_sense_addr_hi = htole32((u_int32_t)(handy >> 32));
+	io->mif_sense_addr_lo = htole32(handy);
 
 	ccb->ccb_done = mfi_scsi_xs_done;
 	ccb->ccb_cookie = xs;
@@ -945,6 +972,7 @@ mfi_scsi_ld(struct mfi_ccb *ccb, struct scsi_xfer *xs)
 {
 	struct scsi_link	*link = xs->sc_link;
 	struct mfi_pass_frame	*pf;
+	uint64_t		handy;
 
 	DNPRINTF(MFI_D_CMD, "%s: mfi_scsi_ld: %d\n",
 	    DEVNAME((struct mfi_softc *)link->adapter_softc), link->target);
@@ -958,8 +986,9 @@ mfi_scsi_ld(struct mfi_ccb *ccb, struct scsi_xfer *xs)
 	pf->mpf_header.mfh_data_len= xs->datalen; /* XXX */
 	pf->mpf_header.mfh_sense_len = MFI_SENSE_SIZE;
 
-	pf->mpf_sense_addr_hi = 0;
-	pf->mpf_sense_addr_lo = htole32(ccb->ccb_psense);
+	handy = ccb->ccb_psense;
+	pf->mpf_sense_addr_hi = htole32((u_int32_t)(handy >> 32));
+	pf->mpf_sense_addr_lo = htole32(handy);
 
 	memset(pf->mpf_cdb, 0, 16);
 	memcpy(pf->mpf_cdb, xs->cmd, xs->cmdlen);
@@ -1129,10 +1158,17 @@ mfi_create_sgl(struct mfi_ccb *ccb, int flags)
 	sgl = ccb->ccb_sgl;
 	sgd = ccb->ccb_dmamap->dm_segs;
 	for (i = 0; i < ccb->ccb_dmamap->dm_nsegs; i++) {
-		sgl->sg32[i].addr = htole32(sgd[i].ds_addr);
-		sgl->sg32[i].len = htole32(sgd[i].ds_len);
-		DNPRINTF(MFI_D_DMA, "%s: addr: %#x  len: %#x\n",
-		    DEVNAME(sc), sgl->sg32[i].addr, sgl->sg32[i].len);
+		if (sc->sc_64bit_dma) {
+			sgl->sg64[i].addr = htole64(sgd[i].ds_addr);
+			sgl->sg64[i].len = htole32(sgd[i].ds_len);
+			DNPRINTF(MFI_D_DMA, "%s: addr: %#x  len: %#x\n",
+			    DEVNAME(sc), sgl->sg64[i].addr, sgl->sg64[i].len);
+		} else {
+			sgl->sg32[i].addr = htole32(sgd[i].ds_addr);
+			sgl->sg32[i].len = htole32(sgd[i].ds_len);
+			DNPRINTF(MFI_D_DMA, "%s: addr: %#x  len: %#x\n",
+			    DEVNAME(sc), sgl->sg32[i].addr, sgl->sg32[i].len);
+		}
 	}
 
 	if (ccb->ccb_direction == MFI_DATA_IN) {
@@ -1145,10 +1181,9 @@ mfi_create_sgl(struct mfi_ccb *ccb, int flags)
 		    ccb->ccb_dmamap->dm_mapsize, BUS_DMASYNC_PREWRITE);
 	}
 
+	hdr->mfh_flags |= sc->sc_sgl_flags;
 	hdr->mfh_sg_count = ccb->ccb_dmamap->dm_nsegs;
-	/* for 64 bit io make the sizeof a variable to hold whatever sg size */
-	ccb->ccb_frame_size += sizeof(struct mfi_sg32) *
-	    ccb->ccb_dmamap->dm_nsegs;
+	ccb->ccb_frame_size += sc->sc_sgl_size * ccb->ccb_dmamap->dm_nsegs;
 	ccb->ccb_extra_frames = (ccb->ccb_frame_size - 1) / MFI_FRAME_SIZE;
 
 	DNPRINTF(MFI_D_DMA, "%s: sg_count: %d  frame_size: %d  frames_size: %d"
@@ -1182,9 +1217,14 @@ mfi_do_mgmt(struct mfi_softc *sc, struct mfi_ccb *ccb, uint32_t opc,
     uint32_t dir, uint32_t len, void *buf, uint8_t *mbox)
 {
 	struct mfi_dcmd_frame	*dcmd;
-	int			s;
+	int			s, rv = EINVAL;
+	uint8_t			*dma_buf = NULL;
 
-	DNPRINTF(MFI_D_MISC, "%s: mfi_mgmt %#x\n", DEVNAME(sc), opc);
+	DNPRINTF(MFI_D_MISC, "%s: mfi_do_mgmt %#x\n", DEVNAME(sc), opc);
+
+	dma_buf = dma_alloc(len, PR_WAITOK);
+	if (dma_buf == NULL)
+		goto done;
 
 	dcmd = &ccb->ccb_frame->mfr_dcmd;
 	memset(dcmd->mdf_mbox, 0, MFI_MBOX_SIZE);
@@ -1203,32 +1243,48 @@ mfi_do_mgmt(struct mfi_softc *sc, struct mfi_ccb *ccb, uint32_t opc,
 		memcpy(dcmd->mdf_mbox, mbox, MFI_MBOX_SIZE);
 
 	if (dir != MFI_DATA_NONE) {
+		if (dir == MFI_DATA_OUT)
+			bcopy(buf, dma_buf, len);
 		dcmd->mdf_header.mfh_data_len = len;
-		ccb->ccb_data = buf;
+		ccb->ccb_data = dma_buf;
 		ccb->ccb_len = len;
 		ccb->ccb_sgl = &dcmd->mdf_sgl;
 
-		if (mfi_create_sgl(ccb, BUS_DMA_WAITOK))
-			return (EINVAL);
+		if (mfi_create_sgl(ccb, BUS_DMA_WAITOK)) {
+			rv = EINVAL;
+			goto done;
+		}
 	}
 
 	if (cold) {
-		if (mfi_poll(ccb))
-			return (EIO);
+		if (mfi_poll(ccb)) {
+			rv = EIO;
+			goto done;
+		}
 	} else {
 		s = splbio();
 		mfi_start(sc, ccb);
 
-		DNPRINTF(MFI_D_MISC, "%s: mfi_mgmt sleeping\n", DEVNAME(sc));
+		DNPRINTF(MFI_D_MISC, "%s: mfi_do_mgmt sleeping\n", DEVNAME(sc));
 		while (ccb->ccb_state != MFI_CCB_DONE)
-			tsleep(ccb, PRIBIO, "mfi_mgmt", 0);
+			tsleep(ccb, PRIBIO, "mfimgmt", 0);
 		splx(s);
 
-		if (ccb->ccb_flags & MFI_CCB_F_ERR)
-			return (EIO);
+		if (ccb->ccb_flags & MFI_CCB_F_ERR) {
+			rv = EIO;
+			goto done;
+		}
 	}
 
-	return (0);
+	if (dir == MFI_DATA_IN)
+		bcopy(dma_buf, buf, len);
+
+	rv = 0;
+done:
+	if (dma_buf)
+		dma_free(dma_buf, len);
+
+	return (rv);
 }
 
 void
@@ -1691,7 +1747,7 @@ mfi_ioctl_blink(struct mfi_softc *sc, struct bioc_blink *bb)
 	for (i = 0, found = 0; i < pd->mpl_no_pd; i++)
 		if (bb->bb_channel == pd->mpl_address[i].mpa_enc_index &&
 		    bb->bb_target == pd->mpl_address[i].mpa_enc_slot) {
-		    	found = 1;
+			found = 1;
 			break;
 		}
 
@@ -1747,7 +1803,7 @@ mfi_ioctl_setstate(struct mfi_softc *sc, struct bioc_setstate *bs)
 	for (i = 0, found = 0; i < pd->mpl_no_pd; i++)
 		if (bs->bs_channel == pd->mpl_address[i].mpa_enc_index &&
 		    bs->bs_target == pd->mpl_address[i].mpa_enc_slot) {
-		    	found = 1;
+			found = 1;
 			break;
 		}
 

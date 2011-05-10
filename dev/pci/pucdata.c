@@ -1,4 +1,4 @@
-/*	$OpenBSD: pucdata.c,v 1.72 2010/07/22 17:16:10 pirofti Exp $	*/
+/*	$OpenBSD: pucdata.c,v 1.74 2011/04/20 04:58:29 mlarkin Exp $	*/
 /*	$NetBSD: pucdata.c,v 1.6 1999/07/03 05:55:23 cgd Exp $	*/
 
 /*
@@ -47,6 +47,14 @@
 #include <dev/ic/comreg.h>
 
 const struct puc_device_description puc_devs[] = {
+
+	{   /* Intel GM45 SOL */
+	    {   PCI_VENDOR_INTEL, PCI_PRODUCT_INTEL_82GM45_AMT_SOL, 0x0000, 0x0000 },
+	    {	0xffff,	0xffff,				      0x0000, 0x0000 },
+	    {
+		{ PUC_PORT_TYPE_COM, 0x10, 0x00, COM_FREQ },
+	    },
+	},
 	/*
 	 * XXX no entry because I have no data:
 	 * XXX Dolphin Peripherals 4006 (single parallel)
@@ -1326,6 +1334,14 @@ const struct puc_device_description puc_devs[] = {
 	    {	0xffff,	0xffff,				      0xffff, 0xffff },
 	    {
 		{ PUC_PORT_TYPE_LPT, 0x10, 0x00 },
+	    },
+	},
+
+	{   /* NetMos NM9922: 2S */
+	    {   PCI_VENDOR_NETMOS, PCI_PRODUCT_NETMOS_NM9922, 0xa000, 0x1000 },
+	    {	0xffff,	0xffff,				      0xffff, 0xffff },
+	    {
+		{ PUC_PORT_TYPE_COM, 0x10, 0x00, COM_FREQ },
 	    },
 	},
 

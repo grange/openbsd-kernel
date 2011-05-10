@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfvar.h,v 1.320 2011/01/11 13:35:58 mcbride Exp $ */
+/*	$OpenBSD: pfvar.h,v 1.329 2011/04/23 10:00:36 bluhm Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -58,7 +58,7 @@ struct ip6_hdr;
 #endif
 #endif
 
-enum	{ PF_INOUT, PF_IN, PF_OUT };
+enum	{ PF_INOUT, PF_IN, PF_OUT, PF_FWD };
 enum	{ PF_PASS, PF_DROP, PF_SCRUB, PF_NOSCRUB, PF_NAT, PF_NONAT,
 	  PF_BINAT, PF_NOBINAT, PF_RDR, PF_NORDR, PF_SYNPROXY_DROP, PF_DEFER,
 	  PF_MATCH, PF_DIVERT, PF_RT };
@@ -105,7 +105,7 @@ enum	{ PFTM_TCP_FIRST_PACKET, PFTM_TCP_OPENING, PFTM_TCP_ESTABLISHED,
 #define PFTM_SRC_NODE_VAL		0	/* Source tracking */
 #define PFTM_TS_DIFF_VAL		30	/* Allowed TS diff */
 
-enum	{ PF_NOPFROUTE, PF_FASTROUTE, PF_ROUTETO, PF_DUPTO, PF_REPLYTO };
+enum	{ PF_NOPFROUTE, PF_ROUTETO, PF_DUPTO, PF_REPLYTO };
 enum	{ PF_LIMIT_STATES, PF_LIMIT_SRC_NODES, PF_LIMIT_FRAGS,
 	  PF_LIMIT_TABLES, PF_LIMIT_TABLE_ENTRIES, PF_LIMIT_MAX };
 #define PF_POOL_IDMASK		0x0f
@@ -543,13 +543,14 @@ struct pf_rule {
 	struct pf_rule_addr	 dst;
 #define PF_SKIP_IFP		0
 #define PF_SKIP_DIR		1
-#define PF_SKIP_AF		2
-#define PF_SKIP_PROTO		3
-#define PF_SKIP_SRC_ADDR	4
-#define PF_SKIP_SRC_PORT	5
-#define PF_SKIP_DST_ADDR	6
-#define PF_SKIP_DST_PORT	7
-#define PF_SKIP_COUNT		8
+#define PF_SKIP_RDOM		2
+#define PF_SKIP_AF		3
+#define PF_SKIP_PROTO		4
+#define PF_SKIP_SRC_ADDR	5
+#define PF_SKIP_SRC_PORT	6
+#define PF_SKIP_DST_ADDR	7
+#define PF_SKIP_DST_PORT	8
+#define PF_SKIP_COUNT		9
 	union pf_rule_ptr	 skip[PF_SKIP_COUNT];
 #define PF_RULE_LABEL_SIZE	 64
 	char			 label[PF_RULE_LABEL_SIZE];
@@ -581,6 +582,7 @@ struct pf_rule {
 	pf_osfp_t		 os_fingerprint;
 
 	int			 rtableid;
+	int			 onrdomain;
 	u_int32_t		 timeout[PFTM_MAX];
 	u_int32_t		 states_cur;
 	u_int32_t		 states_tot;
@@ -1440,6 +1442,7 @@ struct pf_divert {
 		struct in6_addr	ipv6;
 	}		addr;
 	u_int16_t	port;
+	u_int16_t	rdomain;
 };
 
 #define PFFRAG_FRENT_HIWAT	5000	/* Number of fragment entries */
@@ -1470,6 +1473,7 @@ struct pfioc_natlook {
 	struct pf_addr	 rsaddr;
 	struct pf_addr	 rdaddr;
 	u_int16_t	 rdomain;
+	u_int16_t	 rrdomain;
 	u_int16_t	 sport;
 	u_int16_t	 dport;
 	u_int16_t	 rsport;
@@ -1701,7 +1705,7 @@ extern void			 pf_tbladdr_copyout(struct pf_addr_wrap *);
 extern void			 pf_calc_skip_steps(struct pf_rulequeue *);
 extern struct pool		 pf_src_tree_pl, pf_sn_item_pl, pf_rule_pl;
 extern struct pool		 pf_state_pl, pf_state_key_pl, pf_state_item_pl,
-				    pf_altq_pl, pf_pooladdr_pl, pf_rule_item_pl;
+				    pf_altq_pl, pf_rule_item_pl;
 extern struct pool		 pf_state_scrub_pl;
 extern void			 pf_purge_thread(void *);
 extern void			 pf_purge_expired_src_nodes(int);
@@ -1771,6 +1775,7 @@ int	pf_match_port(u_int8_t, u_int16_t, u_int16_t, u_int16_t);
 int	pf_match_uid(u_int8_t, uid_t, uid_t, uid_t);
 int	pf_match_gid(u_int8_t, gid_t, gid_t, gid_t);
 
+int	pf_refragment6(struct mbuf **, struct m_tag *mtag, int);
 void	pf_normalize_init(void);
 int	pf_normalize_ip(struct mbuf **, int, struct pfi_kif *, u_short *,
 	    struct pf_pdesc *);
@@ -1785,8 +1790,8 @@ int	pf_normalize_tcp_stateful(struct mbuf *, int, struct pf_pdesc *,
 	    u_short *, struct tcphdr *, struct pf_state *,
 	    struct pf_state_peer *, struct pf_state_peer *, int *);
 int	pf_normalize_mss(struct mbuf *, int, struct pf_pdesc *, u_int16_t);
-void	pf_scrub_ip(struct mbuf **, u_int16_t, u_int8_t, u_int8_t);
-void	pf_scrub_ip6(struct mbuf **, u_int8_t);
+void	pf_scrub_ip(struct mbuf *, u_int16_t, u_int8_t, u_int8_t);
+void	pf_scrub_ip6(struct mbuf *, u_int8_t);
 u_int32_t
 	pf_state_expires(const struct pf_state *);
 void	pf_purge_expired_fragments(void);
@@ -1867,10 +1872,12 @@ u_int16_t	 pf_tagname2tag(char *);
 void		 pf_tag2tagname(u_int16_t, char *);
 void		 pf_tag_ref(u_int16_t);
 void		 pf_tag_unref(u_int16_t);
-int		 pf_tag_packet(struct mbuf *, int, int);
+void		 pf_tag_packet(struct mbuf *, int, int);
 u_int32_t	 pf_qname2qid(char *);
 void		 pf_qid2qname(u_int32_t, char *);
 void		 pf_qid_unref(u_int32_t);
+int		 pf_addr_compare(struct pf_addr *, struct pf_addr *,
+		    sa_family_t);
 
 extern struct pf_status	pf_status;
 extern struct pool	pf_frent_pl, pf_frag_pl;

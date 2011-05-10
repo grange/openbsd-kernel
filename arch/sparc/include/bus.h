@@ -1,4 +1,4 @@
-/*	$OpenBSD: bus.h,v 1.10 2009/12/25 20:51:43 miod Exp $	*/
+/*	$OpenBSD: bus.h,v 1.12 2011/04/07 15:30:16 miod Exp $	*/
 /*
  * Copyright (c) 2003, Miodrag Vallat.
  *
@@ -36,8 +36,8 @@
  *   own wrappers on a need-to-do basis.
  */
 
-#ifndef	_SPARC_BUS_H_
-#define	_SPARC_BUS_H_
+#ifndef	_MACHINE_BUS_H_
+#define	_MACHINE_BUS_H_
 
 #include <machine/autoconf.h>
 
@@ -90,8 +90,7 @@ static __inline__ int
 bus_space_map(bus_space_tag_t tag, bus_addr_t addr, bus_size_t size, int flags,
     bus_space_handle_t *handle)
 {
-	if ((*handle = (bus_space_handle_t)mapiodev(tag,
-	    addr, size)) != NULL)
+	if ((*handle = (bus_space_handle_t)mapiodev(tag, addr, size)) != 0)
 		return (0);
 
 	return (ENOMEM);
@@ -681,4 +680,4 @@ int	_bus_dmamem_alloc_range(bus_dma_tag_t tag, bus_size_t size,
 
 vaddr_t	_bus_dma_valloc_skewed(size_t, u_long, u_long, u_long);
 
-#endif	/* _SPARC_BUS_H_ */
+#endif	/* _MACHINE_BUS_H_ */
