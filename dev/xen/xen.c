@@ -148,7 +148,9 @@ xen_attach(struct xen_softc *sc)
 			struct xen_attach_args xa;
 
 			xa.xa_name = t;
-			xa.xa_id = xen_atoi(d);
+			snprintf(xa.xa_node, sizeof(xa.xa_node),
+			    "%s/%s", path, d);
+			xa.xa_xen = sc;
 			config_found(&sc->sc_dev, &xa, xen_print);
 
 			len = strlen(d) + 1;
@@ -173,7 +175,7 @@ xen_print(void *aux, const char *pnp)
 
 	if (pnp)
 		printf("%s at %s", xa->xa_name, pnp);
-	printf(" id %d", xa->xa_id);
+	printf(" %s", xa->xa_node);
 
 	return (UNCONF);
 }

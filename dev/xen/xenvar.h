@@ -49,7 +49,9 @@ struct xen_softc {
 
 struct xen_attach_args {
 	const char *	xa_name;
-	int		xa_id;
+	char		xa_node[64];
+
+	struct xen_softc *xa_xen;
 };
 
 /* xen.c */
@@ -58,8 +60,12 @@ int xen_intr(void *);
 
 /* xen_subr.c */
 int xen_store_list(struct xen_softc *, const char *, char **, int *);
-int xen_store_read(struct xen_softc *, const char *, int *);
-
+int xen_store_read(struct xen_softc *, const char *, const char *,
+    char *, int, int *);
+#define xen_store_reads(sc, node, item, buf, size) \
+    xen_store_read((sc), (node), (item), (buf), (size), NULL)
+#define xen_store_readi(sc, node, item, valp) \
+    xen_store_read((sc), (node), (item), NULL, 0, (valp))
 int xen_atoi(const char *);
 
 /* XXX: amd64 and i386 don't have unified cpuid() function yet */

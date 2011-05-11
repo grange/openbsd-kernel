@@ -86,11 +86,15 @@ xen_store_list(struct xen_softc *sc, const char *path, char **bufp, int *sizep)
 }
 
 int
-xen_store_read(struct xen_softc *sc, const char *path, int *valp)
+xen_store_read(struct xen_softc *sc, const char *node, const char *item,
+    char *buf, int size, int *valp)
 {
 	struct xsd_sockmsg msg;
 	u_int32_t cons, prod;
 	int t;
+	char path[64];
+
+	snprintf(path, sizeof(path), "%s/%s", node, item);
 
 	msg.type = XS_READ;
 	msg.req_id = 0;
@@ -128,7 +132,12 @@ xen_store_read(struct xen_softc *sc, const char *path, int *valp)
 
 	if (prod - cons < msg.len)
 		return (1);
-	*valp = xen_atoi((char *)sc->sc_st_if->rsp + cons);
+
+	if (buf)
+		memcpy(buf, (char *)sc->sc_st_if->rsp + cons,
+		    min(size, msg.len));
+	if (valp)
+		*valp = xen_atoi((char *)sc->sc_st_if->rsp + cons);
 	cons += msg.len;
 
 	sc->sc_st_if->rsp_cons = cons;
