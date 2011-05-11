@@ -624,6 +624,7 @@ owctr*	at onewire?		# Counter device
 
 # Xen paravirtual drivers
 xen*	at pci?			# Platform device
+vif*	at xen?			# Virtual Network Interface
 
 pseudo-device	pctr		1
 pseudo-device	nvram		1
