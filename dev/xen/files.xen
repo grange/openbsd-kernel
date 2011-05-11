@@ -2,3 +2,7 @@
 
 file	dev/xen/xen.c			xen
 file	dev/xen/xen_subr.c		xen
+
+device	vif
+attach	vif at xen
+file	dev/xen/vif.c			vif
