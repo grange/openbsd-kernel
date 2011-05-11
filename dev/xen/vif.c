@@ -44,9 +44,6 @@
 #include <dev/xen/hypervisor.h>
 #include <dev/xen/xenvar.h>
 
-/* XXX the following declaration should be elsewhere */
-extern void myetheraddr(u_char *);
-
 #define VNET_TX_ENTRIES		32
 #define VNET_RX_ENTRIES		32
 
@@ -122,6 +119,10 @@ struct vif_soft_desc {
 
 struct vif_softc {
 	struct device	sc_dv;
+
+	struct xen_softc *sc_xen;
+	char 		sc_node[64];
+
 	bus_space_tag_t	sc_bustag;
 	bus_dma_tag_t	sc_dmatag;
 
@@ -225,6 +226,8 @@ void	vif_setmulti(struct vif_softc *, int);
 void	vif_init(struct ifnet *);
 void	vif_stop(struct ifnet *);
 
+void	enaddr_aton(const char *, u_int8_t *);
+
 int
 vif_match(struct device *parent, void *match, void *aux)
 {
@@ -240,9 +243,19 @@ void
 vif_attach(struct device *parent, struct device *self, void *aux)
 {
 	struct vif_softc *sc = (struct vif_softc *)self;
-//	struct cbus_attach_args *ca = aux;
+	struct xen_attach_args *xa = aux;
 //	struct ldc_conn *lc;
 	struct ifnet *ifp;
+	char mac[18];
+
+	sc->sc_xen = xa->xa_xen;
+	strlcpy(sc->sc_node, xa->xa_node, sizeof(sc->sc_node));
+
+	if (xen_store_reads(sc->sc_xen, sc->sc_node, "mac", mac, sizeof(mac))) {
+		printf(": can't read mac address\n");
+		return;
+	}
+	enaddr_aton(mac, sc->sc_ac.ac_enaddr);
 
 #if 0
 	sc->sc_bustag = ca->ca_bustag;
@@ -250,7 +263,6 @@ vif_attach(struct device *parent, struct device *self, void *aux)
 
 	if (OF_getprop(ca->ca_node, "local-mac-address", sc->sc_ac.ac_enaddr,
 	    ETHER_ADDR_LEN) <= 0)
-		myetheraddr(sc->sc_ac.ac_enaddr);
 
 	if (cbus_intr_map(ca->ca_node, ca->ca_tx_ino, &sc->sc_tx_sysino) ||
 	    cbus_intr_map(ca->ca_node, ca->ca_rx_ino, &sc->sc_rx_sysino)) {
@@ -1501,3 +1513,30 @@ vif_dring_free(bus_dma_tag_t t, struct vif_dring *vd)
 	free(vd, M_DEVBUF);
 }
 #endif
+
+/*
+ * Convert "xx:xx:xx:xx:xx:xx" string to Ethernet hardware address.
+ */
+void
+enaddr_aton(const char *s, u_int8_t *a)
+{
+	int b, i;
+
+	if (s != NULL) {
+		for (i = 0; i < 6; i++) {
+			if (*s >= '0' && *s <= '9')
+				b = *s - '0';
+			else
+				b = *s - 'a' + 10;
+			s++;
+			b <<= 4;
+			if (*s >= '0' && *s <= '9')
+				b |= *s - '0';
+			else
+				b |= *s - 'a' + 10;
+			s++;
+			a[i] = b;
+			s++;
+		}
+	}
+}
